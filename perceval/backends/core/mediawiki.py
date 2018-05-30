@@ -20,13 +20,14 @@
 #     Alvaro del Castillo <acs@bitergia.com>
 #
 
-import datetime
 import json
 import logging
 
 import dateutil
 
-from grimoirelab.toolkit.datetime import datetime_to_utc, str_to_datetime
+from grimoirelab.toolkit.datetime import (datetime_to_utc,
+                                          datetime_utcnow,
+                                          str_to_datetime)
 from grimoirelab.toolkit.uris import urijoin
 
 from ...backend import (Backend,
@@ -36,6 +37,7 @@ from ...client import HttpClient
 from ...errors import BackendError
 from ...utils import DEFAULT_DATETIME
 
+CATEGORY_PAGE = 'page'
 
 logger = logging.getLogger(__name__)
 
@@ -67,25 +69,26 @@ class MediaWiki(Backend):
 
     :param url: MediaWiki url
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: collect pages already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.7.0'
+    version = '0.9.4'
 
-    def __init__(self, url, tag=None, cache=None, archive=None):
+    CATEGORIES = [CATEGORY_PAGE]
+
+    def __init__(self, url, tag=None, archive=None):
         origin = url
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.url = url
         self.client = None
-        self._test_mode = False
 
-    def fetch(self, from_date=DEFAULT_DATETIME, reviews_api=False):
+    def fetch(self, category=CATEGORY_PAGE, from_date=DEFAULT_DATETIME, reviews_api=False):
         """Fetch the pages from the backend url.
 
         The method retrieves, from a MediaWiki url, the
         wiki pages.
 
+        :param category: the category of items to fetch
         :param from_date: obtain pages updated since this date
         :param reviews_api: use the reviews API available in MediaWiki >= 1.27
 
@@ -97,13 +100,18 @@ class MediaWiki(Backend):
             from_date = datetime_to_utc(from_date)
 
         kwargs = {"from_date": from_date, "reviews_api": reviews_api}
-        items = super().fetch("page", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch pages"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the pages
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
         reviews_api = kwargs['reviews_api']
 
@@ -122,14 +130,6 @@ class MediaWiki(Backend):
 
         for page_reviews in fetcher:
             yield page_reviews
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -173,7 +173,7 @@ class MediaWiki(Backend):
         This backend only generates one type of item which is
         'page'.
         """
-        return 'page'
+        return CATEGORY_PAGE
 
     def _init_client(self, from_archive=False):
         """Init client"""
@@ -311,9 +311,7 @@ class MediaWiki(Backend):
 
         # from_date can not be older than MAX_RECENT_DAYS days ago
         if from_date:
-            if self._test_mode:
-                logger.warning("Test mode active; MAX_RECENT_DAYS limit ignored")
-            elif (datetime.datetime.now(dateutil.tz.tzlocal()) - from_date).days >= MAX_RECENT_DAYS:
+            if (datetime_utcnow() - from_date).days >= MAX_RECENT_DAYS:
                 cause = "Can't get incremental pages older than %i days." % MAX_RECENT_DAYS
                 cause += " Do a complete analysis without from_date for older changes."
                 raise BackendError(cause=cause)
@@ -422,6 +420,7 @@ class MediaWikiClient(HttpClient):
     def get_recent_pages(self, namespaces, rccontinue=''):
         """Retrieve recent pages from all namespaces starting from rccontinue."""
 
+        namespaces.sort()
         params = {
             "action": "query",
             "list": "recentchanges",
@@ -462,6 +461,7 @@ class MediaWikiClient(HttpClient):
 
             from_date_str = from_date.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        namespaces.sort()
         params = {
             "action": "query",
             "list": "allrevisions",
@@ -491,7 +491,7 @@ class MediaWikiCommand(BackendCommand):
         """Returns the MediaWiki argument parser."""
 
         parser = BackendCommandArgumentParser(from_date=True,
-                                              cache=True)
+                                              archive=True)
 
         # MediaWiki options
         group = parser.parser.add_argument_group('MediaWiki arguments')

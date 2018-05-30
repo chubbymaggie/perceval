@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -21,10 +21,6 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import unittest
 
 import perceval.errors as errors
@@ -67,6 +63,24 @@ class TestBaseError(unittest.TestCase):
         self.assertRaises(KeyError, MockErrorArgs, **kwargs)
 
 
+class TestArchiveError(unittest.TestCase):
+
+    def test_message(self):
+        """Make sure that prints the correct error"""
+
+        e = errors.ArchiveError(cause='archive item not found')
+        self.assertEqual('archive item not found', str(e))
+
+
+class TestArchiveManagerError(unittest.TestCase):
+
+    def test_message(self):
+        """Make sure that prints the correct error"""
+
+        e = errors.ArchiveManagerError(cause='archive not found')
+        self.assertEqual('archive not found', str(e))
+
+
 class TestBackendError(unittest.TestCase):
 
     def test_message(self):
@@ -74,15 +88,6 @@ class TestBackendError(unittest.TestCase):
 
         e = errors.BackendError(cause='mock error on backend')
         self.assertEqual('mock error on backend', str(e))
-
-
-class TestCacheError(unittest.TestCase):
-
-    def test_message(self):
-        """Make sure that prints the correct error"""
-
-        e = errors.CacheError(cause='invalid cache')
-        self.assertEqual('invalid cache', str(e))
 
 
 class TestRepositoryError(unittest.TestCase):

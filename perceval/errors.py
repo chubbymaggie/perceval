@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -37,20 +37,20 @@ class BaseError(Exception):
         return self.msg
 
 
-class BackendError(BaseError):
-    """Generic error for backends"""
-
-    message = "%(cause)s"
-
-
 class ArchiveError(BaseError):
     """Generic error for archive objects"""
 
     message = "%(cause)s"
 
 
-class CacheError(BaseError):
-    """Generic error for cache objects"""
+class ArchiveManagerError(BaseError):
+    """Generic error for archive manager"""
+
+    message = "%(cause)s"
+
+
+class BackendError(BaseError):
+    """Generic error for backends"""
 
     message = "%(cause)s"
 

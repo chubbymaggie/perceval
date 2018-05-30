@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -34,12 +34,12 @@ from ...backend import (Backend,
 from ...client import HttpClient
 from ...utils import DEFAULT_DATETIME
 
-
-logger = logging.getLogger(__name__)
-
+CATEGORY_ISSUE = "issue"
 
 MAX_ISSUES = 100  # Maximum number of issues per query
 USER_FIELDS = ['assigned_to', 'author']
+
+logger = logging.getLogger(__name__)
 
 
 class Redmine(Backend):
@@ -55,16 +55,17 @@ class Redmine(Backend):
     :param api_token: token needed to use the API
     :param max_issues:  maximum number of issues requested on the same query
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: collect issues already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.7.0'
+    version = '0.9.4'
+
+    CATEGORIES = [CATEGORY_ISSUE]
 
     def __init__(self, url, api_token=None, max_issues=MAX_ISSUES,
-                 tag=None, cache=None, archive=None):
+                 tag=None, archive=None):
         origin = url
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.url = url
         self.api_token = api_token
         self.max_issues = max_issues
@@ -72,13 +73,14 @@ class Redmine(Backend):
 
         self._users = {}
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_ISSUE, from_date=DEFAULT_DATETIME):
         """Fetch the issues from the server.
 
         This method fetches the issues stored on the server that were
         updated since the given date. Data about attachments, journals
         and watchers (among others) are included within each issue.
 
+        :param category: the category of items to fetch
         :param from_date: obtain issues updated since this date
 
         :returns: a generator of issues
@@ -87,15 +89,19 @@ class Redmine(Backend):
             from_date = DEFAULT_DATETIME
 
         from_date = datetime_to_utc(from_date)
-
         kwargs = {'from_date': from_date}
-        items = super().fetch("issue", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the issues"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the issues
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
 
         logger.info("Fetching issues of '%s' from %s",
@@ -124,14 +130,6 @@ class Redmine(Backend):
             nissues += 1
 
         logger.info("Fetch process completed: %s issues fetched", nissues)
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -178,7 +176,7 @@ class Redmine(Backend):
         This backend only generates one type of item which is
         'issue'.
         """
-        return 'issue'
+        return CATEGORY_ISSUE
 
     @staticmethod
     def parse_issues(raw_json):
@@ -295,7 +293,7 @@ class RedmineCommand(BackendCommand):
 
         parser = BackendCommandArgumentParser(from_date=True,
                                               token_auth=True,
-                                              cache=True)
+                                              archive=True)
 
         # Redmine options
         group = parser.parser.add_argument_group('Redmine arguments')
@@ -345,7 +343,7 @@ class RedmineClient(HttpClient):
     CWATCHERS = 'watchers'
 
     def __init__(self, base_url, api_token=None, archive=None, from_archive=False):
-        super().__init__(base_url.rstrip('/'), archive, from_archive)
+        super().__init__(base_url.rstrip('/'), archive=archive, from_archive=from_archive)
         self.api_token = api_token
 
     def issues(self, from_date=DEFAULT_DATETIME,
@@ -407,6 +405,22 @@ class RedmineClient(HttpClient):
         response = self._call(resource, params)
 
         return response
+
+    @staticmethod
+    def sanitize_for_archive(url, headers, payload):
+        """Sanitize payload of a HTTP request by removing the token information
+        before storing/retrieving archived items
+
+        :param: url: HTTP url request
+        :param: headers: HTTP headers request
+        :param: payload: HTTP payload request
+
+        :returns url, headers and the sanitized payload
+        """
+        if RedmineClient.PKEY in payload:
+            payload.pop(RedmineClient.PKEY)
+
+        return url, headers, payload
 
     def _call(self, resource, params):
         """Call to get a resource.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -25,9 +25,11 @@
 import codecs
 import os.path
 import re
+import sys
+import unittest
 
 from setuptools import setup
-
+from setuptools.command.test import test as TestClass
 
 here = os.path.abspath(os.path.dirname(__file__))
 readme_md = os.path.join(here, 'README.md')
@@ -51,10 +53,26 @@ with codecs.open(version_py, 'r', encoding='utf-8') as fd:
                         fd.read(), re.MULTILINE).group(1)
 
 
+class TestCommand(TestClass):
+    user_options = []
+    __dir__ = os.path.dirname(os.path.realpath(__file__))
+
+    def initialize_options(self):
+        super().initialize_options()
+        sys.path.insert(0, os.path.join(self.__dir__, 'tests'))
+
+    def run_tests(self):
+        test_suite = unittest.TestLoader().discover('.', pattern='test_*.py')
+        result = unittest.TextTestRunner(buffer=True).run(test_suite)
+        sys.exit(not result.wasSuccessful())
+
+
+cmdclass = {'test': TestCommand}
+
 setup(name="perceval",
       description="Fetch data from software repositories",
       long_description=long_description,
-      url="https://github.com/grimoirelab/perceval",
+      url="https://github.com/chaoss/grimoirelab-perceval",
       version=version,
       author="Bitergia",
       author_email="sduenas@bitergia.com",
@@ -72,19 +90,28 @@ setup(name="perceval",
           'perceval.backends',
           'perceval.backends.core'
       ],
-      namespaces=[
+      namespace_packages=[
+          'perceval',
           'perceval.backends'
+      ],
+      setup_requires=[
+          'wheel',
+          'pandoc'
+      ],
+      tests_require=[
+          'httpretty==0.8.6'
       ],
       install_requires=[
           'python-dateutil>=2.6.0',
           'requests>=2.7.0',
           'beautifulsoup4>=4.3.2',
           'feedparser>=5.1.3',
-          'dulwich>=0.18.5',
+          'dulwich>=0.18.5, <0.19',
           'urllib3>=1.22',
           'grimoirelab-toolkit>=0.1.4'
       ],
       scripts=[
           'bin/perceval'
       ],
+      cmdclass=cmdclass,
       zip_safe=False)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -21,18 +21,15 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+import copy
 import datetime
 import os
 import shutil
-import sys
 import unittest
 
 import httpretty
 import pkg_resources
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -42,7 +39,7 @@ from perceval.backends.core.bugzillarest import (BugzillaREST,
                                                  BugzillaRESTCommand,
                                                  BugzillaRESTClient,
                                                  BugzillaRESTError)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 
 BUGZILLA_SERVER_URL = 'http://example.com'
@@ -147,11 +144,6 @@ class TestBugzillaRESTBackend(unittest.TestCase):
         self.assertEqual(bg.url, BUGZILLA_SERVER_URL)
         self.assertEqual(bg.origin, BUGZILLA_SERVER_URL)
         self.assertEqual(bg.tag, BUGZILLA_SERVER_URL)
-
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(BugzillaREST.has_caching(), False)
 
     def test_has_resuming(self):
         """Test if it returns True when has_resuming is called"""
@@ -273,7 +265,12 @@ class TestBugzillaRESTBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = BugzillaREST(BUGZILLA_SERVER_URL, max_bugs=2, archive=self.archive)
+        self.backend_write_archive = BugzillaREST(BUGZILLA_SERVER_URL,
+                                                  user='jsmith@example.com', password='1234',
+                                                  max_bugs=2, archive=self.archive)
+        self.backend_read_archive = BugzillaREST(BUGZILLA_SERVER_URL,
+                                                 user='jreno@example.com', password='5678',
+                                                 max_bugs=2, archive=self.archive)
 
     def tearDown(self):
         shutil.rmtree(self.test_path)
@@ -282,6 +279,10 @@ class TestBugzillaRESTBackendArchive(TestCaseBackendArchive):
     def test_fetch_from_archive(self):
         """Test whether a list of bugs is returned from the archive"""
 
+        httpretty.register_uri(httpretty.GET,
+                               BUGZILLA_LOGIN_URL,
+                               body='{"token": "786-OLaWfBisMY", "id": "786"}',
+                               status=200)
         setup_http_server()
         self._test_fetch_from_archive(from_date=None)
 
@@ -289,6 +290,10 @@ class TestBugzillaRESTBackendArchive(TestCaseBackendArchive):
     def test_fetch_empty_from_archive(self):
         """Test whether it works when no bugs are fetched from the archive"""
 
+        httpretty.register_uri(httpretty.GET,
+                               BUGZILLA_LOGIN_URL,
+                               body='{"token": "786-OLaWfBisMY", "id": "786"}',
+                               status=200)
         body = read_file('data/bugzilla/bugzilla_rest_bugs_empty.json')
         httpretty.register_uri(httpretty.GET,
                                BUGZILLA_BUGS_URL,
@@ -588,6 +593,34 @@ class TestBugzillaRESTClient(unittest.TestCase):
             self.assertEqual(e.exception.error,
                              "API key authentication is required.")
 
+    def test_sanitize_for_archive_login(self):
+        """Test whether the sanitize method works properly when login"""
+
+        url = "http://example.com"
+        headers = "headers-information"
+        payload = {'login': 'jsmith@example.com', 'password': '1234'}
+
+        s_url, s_headers, s_payload = BugzillaRESTClient.sanitize_for_archive(url, headers, copy.deepcopy(payload))
+        payload.pop('login')
+        payload.pop('password')
+
+        self.assertEqual(url, s_url)
+        self.assertEqual(headers, s_headers)
+        self.assertEqual(payload, s_payload)
+
+    def test_sanitize_for_archive_token(self):
+        """Test whether the sanitize method works properly for token-signed requests"""
+
+        payload = {'limit': 2,
+                   'order': 'changeddate',
+                   'token': '786-OLaWfBisMY',
+                   'include_fields': '_all',
+                   'last_change_time': '1970-01-01T00:00:00Z'}
+
+        url, headers, payload = BugzillaRESTClient.sanitize_for_archive(None, None, payload)
+        with self.assertRaises(KeyError):
+            payload.pop('token')
+
 
 class TestBugzillaRESTCommand(unittest.TestCase):
     """BugzillaRESTCommand unit tests"""
@@ -608,7 +641,7 @@ class TestBugzillaRESTCommand(unittest.TestCase):
                 '--api-token', 'abcdefg',
                 '--max-bugs', '10', '--tag', 'test',
                 '--from-date', '1970-01-01',
-                '--no-cache',
+                '--no-archive',
                 BUGZILLA_SERVER_URL]
 
         parsed_args = parser.parse(*args)
@@ -618,6 +651,7 @@ class TestBugzillaRESTCommand(unittest.TestCase):
         self.assertEqual(parsed_args.max_bugs, 10)
         self.assertEqual(parsed_args.tag, 'test')
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.url, BUGZILLA_SERVER_URL)
 
 

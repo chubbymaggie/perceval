@@ -1,4 +1,4 @@
-# Perceval [![Build Status](https://travis-ci.org/grimoirelab/perceval.svg?branch=master)](https://travis-ci.org/grimoirelab/perceval) [![Coverage Status](https://img.shields.io/coveralls/grimoirelab/perceval.svg)](https://coveralls.io/r/grimoirelab/perceval?branch=master) [![PyPI version](https://badge.fury.io/py/perceval.svg)](https://badge.fury.io/py/perceval)
+# Perceval [![Build Status](https://travis-ci.org/chaoss/grimoirelab-perceval.svg?branch=master)](https://travis-ci.org/chaoss/grimoirelab-perceval) [![Coverage Status](https://img.shields.io/coveralls/chaoss/grimoirelab-perceval.svg)](https://coveralls.io/r/chaoss/grimoirelab-perceval?branch=master) [![PyPI version](https://badge.fury.io/py/perceval.svg)](https://badge.fury.io/py/perceval) [![Documentation in RTD](https://readthedocs.org/projects/perceval/badge/)](http://perceval.readthedocs.io)
 
 Send Sir Perceval on a quest to retrieve and gather data from software
 repositories.
@@ -20,11 +20,11 @@ are:
     git              Fetch commits from Git
     github           Fetch issues from GitHub
     gitlab           Fetch issues from GitLab
-    gmane            Fetch messages from Gmane
     hyperkitty       Fetch messages from a HyperKitty archiver
     jenkins          Fetch builds from a Jenkins server
     jira             Fetch issues from JIRA issue tracker
     launchpad        Fetch issues from Launchpad issue tracker
+    mattermost       Fetch posts from a Mattermost server
     mbox             Fetch messages from MBox files
     mediawiki        Fetch pages and revisions from a MediaWiki site
     meetup           Fetch events from a Meetup group
@@ -76,14 +76,14 @@ $ pip3 install perceval
 
 A Perceval Docker image is available at [DockerHub](https://hub.docker.com/r/grimoirelab/perceval/).
 
-Detailed information on how to run and/or build this image can be found [here](https://github.com/grimoirelab/perceval/tree/master/docker/images/).
+Detailed information on how to run and/or build this image can be found [here](https://github.com/chaoss/grimoirelab-perceval/tree/master/docker/images/).
 
 ### Source code
 
 To install from the source code you will need to clone the repository first:
 
 ```
-$ git clone https://github.com/grimoirelab/perceval.git
+$ git clone https://github.com/chaoss/grimoirelab-perceval.git
 ```
 
 In this case, [setuptools](http://setuptools.readthedocs.io/en/latest/) package will be required.
@@ -158,7 +158,7 @@ To run this backend execute the next command. Take into account that to run
 this backend Git program has to be installed on your system.
 
 ```
-$ perceval git 'https://github.com/grimoirelab/perceval.git' --from-date '2016-01-01'
+$ perceval git 'https://github.com/chaoss/grimoirelab-perceval.git' --from-date '2016-01-01'
 ```
 
 Git backend can also work with a Git log file as input. We recommend to use the next command to get the most complete log file.
@@ -189,11 +189,6 @@ $ perceval github elastic logstash --from-date '2016-01-01'
 $ perceval gitlab elastic logstash --from-date '2016-01-01'
 ```
 
-### Gmane
-```
-$ perceval gmane --offset 2000 'evince-list@gnome.org'
-```
-
 ### HyperKitty
 ```
 $ perceval hyperkitty 'https://lists.mailman3.org/archives/list/mailman-users@mailman3.org' --from-date 2017-01-01
@@ -201,7 +196,7 @@ $ perceval hyperkitty 'https://lists.mailman3.org/archives/list/mailman-users@ma
 
 ### Jenkins
 ```
-$ perceval jenkins 'http://jenkins.cyanogenmod.org/'
+$ perceval jenkins 'https://build.opnfv.org/ci/'
 ```
 
 ### JIRA
@@ -212,6 +207,11 @@ $ perceval jira 'https://tickets.puppetlabs.com' --project PUP --from-date '2016
 ### Launchpad
 ```
 $ perceval launchpad ubuntu --from-date '2016-01-01'
+```
+
+### Mattermost
+```
+$ perceval mattermost 'http://mattermost.example.com' jgw7jdmjkjf19ffkwnw59i5f9e --from-date '2016-01-01' -t 'abcdefghijk'
 ```
 
 ### MBox

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -25,7 +25,6 @@
 import datetime
 import json
 import os
-import sys
 import time
 import unittest
 
@@ -33,19 +32,16 @@ import httpretty
 import pkg_resources
 import requests
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
+from grimoirelab.toolkit.datetime import datetime_utcnow
 from perceval.backend import BackendCommandArgumentParser
 from perceval.errors import RateLimitError
 from perceval.utils import DEFAULT_DATETIME
 from perceval.backends.core.gitlab import (GitLab,
                                            GitLabCommand,
                                            GitLabClient)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 GITLAB_URL = "https://gitlab.com"
 GITLAB_API_URL = GITLAB_URL + "/api/v4"
@@ -225,11 +221,6 @@ class TestGitLabBackend(unittest.TestCase):
         self.assertEqual(gitlab.tag, GITLAB_ENTERPRISE_URL + "/am/test")
         self.assertIsNone(gitlab.client)
 
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(GitLab.has_caching(), False)
-
     def test_has_archiving(self):
         """Test if it returns False when has_archiving is called"""
 
@@ -327,7 +318,8 @@ class TestGitHUbBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = GitLab("fdroid", "fdroiddata", api_token="your-token", archive=self.archive)
+        self.backend_write_archive = GitLab("fdroid", "fdroiddata", api_token="your-token", archive=self.archive)
+        self.backend_read_archive = GitLab("fdroid", "fdroiddata", api_token="your-token", archive=self.archive)
 
     @httpretty.activate
     def test_fetch_from_archive(self):
@@ -351,7 +343,8 @@ class TestGitHUbBackendArchive(TestCaseBackendArchive):
 
         setup_http_server(GITLAB_ENTERPRISE_URL_PROJECT, GITLAB_ENTERPRISE_ISSUES_URL)
 
-        self.backend = GitLab('am', 'test', base_url=GITLAB_ENTERPRISE_URL, archive=self.archive)
+        self.backend_write_archive = GitLab('am', 'test', base_url=GITLAB_ENTERPRISE_URL, archive=self.archive)
+        self.backend_read_archive = GitLab('am', 'test', base_url=GITLAB_ENTERPRISE_URL, archive=self.archive)
         self._test_fetch_from_archive()
 
     @httpretty.activate
@@ -570,6 +563,24 @@ class TestGitLabClient(unittest.TestCase):
             _ = [issues for issues in client.issues()]
 
     @httpretty.activate
+    def test_calculate_time_to_reset(self):
+        """Test whether the time to reset is zero if the sleep time is negative"""
+
+        httpretty.register_uri(httpretty.GET,
+                               GITLAB_URL_PROJECT,
+                               body='',
+                               status=200,
+                               forcing_headers={
+                                   'RateLimit-Remaining': '20',
+                                   'RateLimit-Reset': int(datetime_utcnow().replace(microsecond=0).timestamp())
+                               })
+
+        client = GitLabClient("fdroid", "fdroiddata", "your-token")
+        time_to_reset = client.calculate_time_to_reset()
+
+        self.assertEqual(time_to_reset, 0)
+
+    @httpretty.activate
     def test_sleep_for_rate(self):
         """Test whether a RateLimit error is thrown when the sleep for rate parameter is false"""
 
@@ -636,7 +647,7 @@ class TestGitLabCommand(unittest.TestCase):
 
         args = ['--sleep-for-rate',
                 '--min-rate-to-sleep', '1',
-                '--tag', 'test', '--no-cache',
+                '--tag', 'test', '--no-archive',
                 '--api-token', 'abcdefgh',
                 '--from-date', '1970-01-01',
                 '--enterprise-url', 'https://example.com',
@@ -650,7 +661,7 @@ class TestGitLabCommand(unittest.TestCase):
         self.assertEqual(parsed_args.min_rate_to_sleep, 1)
         self.assertEqual(parsed_args.tag, 'test')
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
-        self.assertEqual(parsed_args.no_cache, True)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.api_token, 'abcdefgh')
 
 

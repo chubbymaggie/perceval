@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -27,27 +27,28 @@ import io
 import json
 import os
 import shutil
-import sys
+import sqlite3
 import tempfile
 import unittest
 import unittest.mock
 
 import dateutil.tz
 
-from grimoirelab.toolkit.datetime import InvalidDateError
+from grimoirelab.toolkit.datetime import (InvalidDateError,
+                                          datetime_utcnow,
+                                          str_to_datetime)
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from perceval import __version__
-from perceval.archive import Archive
+from perceval.backends.core import __version__
+from perceval.archive import Archive, ArchiveManager
 from perceval.backend import (Backend,
                               BackendCommandArgumentParser,
                               BackendCommand,
-                              metadata,
-                              uuid)
-from perceval.cache import Cache
-from perceval.errors import ArchiveError
+                              uuid,
+                              fetch,
+                              fetch_from_archive)
+from perceval.errors import ArchiveError, BackendError
 from perceval.utils import DEFAULT_DATETIME
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 
 class MockedBackend(Backend):
@@ -55,29 +56,29 @@ class MockedBackend(Backend):
 
     version = '0.2.0'
     CATEGORY = "mock_item"
+    CATEGORIES = [CATEGORY]
     ITEMS = 5
 
     def __init__(self, origin, tag=None, archive=None):
         super().__init__(origin, tag=tag, archive=archive)
+        self._fetch_from_archive = False
 
-    def fetch_items(self, **kwargs):
+    def fetch_items(self, category, **kwargs):
         for x in range(MockedBackend.ITEMS):
-            item = {'item': x}
-            yield item
+            if self._fetch_from_archive:
+                item = self.archive.retrieve(str(x), None, None)
+                yield item
+            else:
+                item = {'item': x}
+                if self.archive:
+                    self.archive.store(str(x), None, None, item)
+                yield item
 
-    def fetch(self):
-        return super().fetch(MockedBackend.CATEGORY)
-
-    @metadata
-    def fetch_from_cache(self):
-        for x in range(5):
-            item = {
-                'item': x,
-                'cache': True
-            }
-            yield item
+    def fetch(self, category=CATEGORY):
+        return super().fetch(category)
 
     def _init_client(self, from_archive=False):
+        self._fetch_from_archive = from_archive
         return None
 
     @staticmethod
@@ -93,10 +94,29 @@ class MockedBackend(Backend):
         return MockedBackend.CATEGORY
 
 
+class CommandBackend(MockedBackend):
+    """Backend used for testing in BackendCommand tests"""
+
+    def fetch_items(self, category, **kwargs):
+        for item in super().fetch_items(category, **kwargs):
+            if self._fetch_from_archive:
+                item['archive'] = True
+            yield item
+
+
+class ErrorCommandBackend(CommandBackend):
+    """Backend which raises an exception while fetching items"""
+
+    def fetch_items(self, category, **kwargs):
+        for item in super().fetch_items(category, **kwargs):
+            yield item
+            raise BackendError(cause="Unhandled exception")
+
+
 class MockedBackendCommand(BackendCommand):
     """Mocked backend command class used for testing"""
 
-    BACKEND = MockedBackend
+    BACKEND = CommandBackend
 
     def __init__(self, *args):
         super().__init__(*args)
@@ -112,9 +132,33 @@ class MockedBackendCommand(BackendCommand):
         parser = BackendCommandArgumentParser(from_date=True,
                                               basic_auth=True,
                                               token_auth=True,
-                                              cache=True)
+                                              archive=True)
         parser.parser.add_argument('origin')
-        parser.parser.add_argument('--category', dest='category')
+        parser.parser.add_argument('--subtype', dest='subtype')
+
+        return parser
+
+
+class NoArchiveBackendCommand(BackendCommand):
+    """Mocked backend command class used for testing which does not support archive"""
+
+    BACKEND = CommandBackend
+
+    def __init__(self, *args):
+        super().__init__(*args)
+
+    def _pre_init(self):
+        setattr(self.parsed_args, 'pre_init', True)
+
+    def _post_init(self):
+        setattr(self.parsed_args, 'post_init', True)
+
+    @staticmethod
+    def setup_cmd_parser():
+        parser = BackendCommandArgumentParser(from_date=True,
+                                              archive=False)
+        parser.parser.add_argument('origin')
+        parser.parser.add_argument('--subtype', dest='subtype')
 
         return parser
 
@@ -140,13 +184,13 @@ class TestBackend(unittest.TestCase):
         b = Backend('test')
         self.assertEqual(b.origin, 'test')
 
-    def test_has_caching(self):
+    def test_has_archiving(self):
         """Test whether an NotImplementedError exception is thrown"""
 
         b = Backend('test')
 
         with self.assertRaises(NotImplementedError):
-            b.has_caching()
+            b.has_archiving()
 
     def test_has_resuming(self):
         """Test whether an NotImplementedError exception is thrown"""
@@ -191,55 +235,31 @@ class TestBackend(unittest.TestCase):
         self.assertEqual(b.origin, 'test')
         self.assertEqual(b.tag, 'mytag')
 
-    def test_cache(self):
-        """Test whether cache value is initializated"""
+    def test_archive(self):
+        """Test whether archive value is initializated"""
 
-        cache_path = os.path.join(self.test_path, 'mockrepo')
-        cache = Cache(cache_path)
+        archive_path = os.path.join(self.test_path, 'myarchive')
+        archive = Archive.create(archive_path)
 
-        b = Backend('test', cache=cache)
-        self.assertEqual(b.cache, cache)
+        b = Backend('test', archive=archive)
+        self.assertEqual(b.archive, archive)
 
         b = Backend('test')
-        self.assertEqual(b.cache, None)
+        self.assertEqual(b.archive, None)
 
-        b.cache = cache
-        self.assertEqual(b.cache, cache)
+        b.archive = archive
+        self.assertEqual(b.archive, archive)
 
-    def test_cache_value_error(self):
-        """Test whether it raises a error on invalid cache istances"""
+    def test_archive_value_error(self):
+        """Test whether it raises a error on invalid archive istances"""
 
         with self.assertRaises(ValueError):
-            Backend('test', cache=8)
+            Backend('test', archive=8)
 
         b = Backend('test')
 
         with self.assertRaises(ValueError):
-            b.cache = 8
-
-    def test_fetch_client_not_provided(self):
-        """Test whether an NotImplementedError exception is thrown"""
-
-        b = Backend('test')
-
-        with self.assertRaises(NotImplementedError):
-            _ = [item for item in b.fetch(category="acme")]
-
-    def test_fetch_items(self):
-        """Test whether an NotImplementedError exception is thrown"""
-
-        b = Backend('test')
-
-        with self.assertRaises(NotImplementedError):
-            b.fetch_items()
-
-    def test_init_client_not_implemented(self):
-        """Test whether an NotImplementedError exception is thrown"""
-
-        b = Backend('test')
-
-        with self.assertRaises(NotImplementedError):
-            b._init_client()
+            b.archive = 8
 
     def test_init_archive(self):
         """Test whether the archive is properly initialized when executing the fetch method"""
@@ -253,7 +273,40 @@ class TestBackend(unittest.TestCase):
         self.assertEqual(b.archive.backend_name, b.__class__.__name__)
         self.assertEqual(b.archive.backend_version, b.version)
         self.assertEqual(b.archive.origin, b.origin)
-        self.assertEqual(b.archive.item_category, MockedBackend.CATEGORY)
+        self.assertEqual(b.archive.category, MockedBackend.CATEGORY)
+
+    def test_fetch_wrong_category(self):
+        """Check that an error is thrown if the category is not valid"""
+
+        b = MockedBackend('test')
+
+        with self.assertRaises(BackendError):
+            _ = [item for item in b.fetch(category="acme")]
+
+    def test_fetch_client_not_provided(self):
+        """Test whether an NotImplementedError exception is thrown"""
+
+        b = Backend('test')
+        b.CATEGORIES = [MockedBackend.CATEGORY]
+
+        with self.assertRaises(NotImplementedError):
+            _ = [item for item in b.fetch(category=MockedBackend.CATEGORY)]
+
+    def test_init_client_not_implemented(self):
+        """Test whether an NotImplementedError exception is thrown"""
+
+        b = Backend('test')
+
+        with self.assertRaises(NotImplementedError):
+            b._init_client()
+
+    def test_fetch_items(self):
+        """Test whether an NotImplementedError exception is thrown"""
+
+        b = Backend('test')
+
+        with self.assertRaises(NotImplementedError):
+            b.fetch_items(MockedBackend.CATEGORY)
 
 
 class TestBackendArchive(TestCaseBackendArchive):
@@ -261,7 +314,8 @@ class TestBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = MockedBackend('test', archive=self.archive)
+        self.backend_write_archive = MockedBackend('test', archive=self.archive)
+        self.backend_read_archive = MockedBackend('test', archive=self.archive)
 
     def tearDown(self):
         shutil.rmtree(self.test_path)
@@ -432,29 +486,60 @@ class TestBackendCommandArgumentParser(unittest.TestCase):
         self.assertEqual(parsed_args.password, '1234')
         self.assertEqual(parsed_args.api_token, 'abcd')
 
-    def test_parse_cache_args(self):
-        """Test if the authtentication arguments are parsed"""
+    def test_parse_archive_args(self):
+        """Test if achiving arguments are parsed"""
 
-        args = ['--cache-path', '/tmp/cache',
-                '--clean-cache', '--fetch-cache']
+        args = ['--archive-path', '/tmp/archive',
+                '--fetch-archive',
+                '--archived-since', '2016-01-01',
+                '--category', 'mocked']
 
-        parser = BackendCommandArgumentParser(cache=True)
+        parser = BackendCommandArgumentParser(archive=True)
         parsed_args = parser.parse(*args)
 
+        expected_dt = datetime.datetime(2016, 1, 1, 0, 0,
+                                        tzinfo=dateutil.tz.tzutc())
+
         self.assertIsInstance(parsed_args, argparse.Namespace)
-        self.assertEqual(parsed_args.cache_path, '/tmp/cache')
-        self.assertEqual(parsed_args.clean_cache, True)
-        self.assertEqual(parsed_args.fetch_cache, True)
-        self.assertEqual(parsed_args.no_cache, False)
+        self.assertEqual(parsed_args.archive_path, '/tmp/archive')
+        self.assertEqual(parsed_args.fetch_archive, True)
+        self.assertEqual(parsed_args.no_archive, False)
+        self.assertEqual(parsed_args.archived_since, expected_dt)
 
-    def test_incompatible_fetch_cache_and_no_cache(self):
-        """Test if fetch-cache and no-cache arguments are incompatible"""
+    def test_incompatible_fetch_archive_and_no_archive(self):
+        """Test if fetch-archive and no-archive arguments are incompatible"""
 
-        args = ['--fetch-cache', '--no-cache']
-        parser = BackendCommandArgumentParser(cache=True)
+        args = ['--fetch-archive', '--no-archive']
+        parser = BackendCommandArgumentParser(archive=True)
 
         with self.assertRaises(AttributeError):
             _ = parser.parse(*args)
+
+    def test_fetch_archive_needs_category(self):
+        """Test if fetch-archive needs a category"""
+
+        args = ['--fetch-archive']
+        parser = BackendCommandArgumentParser(archive=True)
+
+        with self.assertRaises(AttributeError):
+            _ = parser.parse(*args)
+
+    def test_remove_empty_category(self):
+        """Test whether category argument is removed when no value is given"""
+
+        args = []
+        parser = BackendCommandArgumentParser(archive=True)
+        parsed_args = parser.parse(*args)
+
+        with self.assertRaises(AttributeError):
+            _ = parsed_args.category
+
+        # An empty string is parsed
+        args = ['--category', '']
+        parser = BackendCommandArgumentParser(archive=True)
+        parsed_args = parser.parse(*args)
+
+        self.assertEqual(parsed_args.category, '')
 
 
 def convert_cmd_output_to_json(filepath):
@@ -488,7 +573,8 @@ class TestBackendCommand(unittest.TestCase):
         """Test if the arguments are parsed when the class is initialized"""
 
         args = ['-u', 'jsmith', '-p', '1234', '-t', 'abcd',
-                '--cache-path', self.test_path, '--fetch-cache',
+                '--category', 'mock_item', '--archive-path', self.test_path,
+                '--fetch-archive', '--archived-since', '2015-01-01',
                 '--from-date', '2015-01-01', '--tag', 'test',
                 '--output', self.fout_path, 'http://example.com/']
 
@@ -501,17 +587,18 @@ class TestBackendCommand(unittest.TestCase):
         self.assertEqual(cmd.parsed_args.user, 'jsmith')
         self.assertEqual(cmd.parsed_args.password, '1234')
         self.assertEqual(cmd.parsed_args.api_token, 'abcd')
-        self.assertEqual(cmd.parsed_args.cache_path, self.test_path)
-        self.assertEqual(cmd.parsed_args.fetch_cache, True)
+        self.assertEqual(cmd.parsed_args.archive_path, self.test_path)
+        self.assertEqual(cmd.parsed_args.fetch_archive, True)
+        self.assertEqual(cmd.parsed_args.archived_since, dt_expected)
         self.assertEqual(cmd.parsed_args.from_date, dt_expected)
         self.assertEqual(cmd.parsed_args.tag, 'test')
 
         self.assertIsInstance(cmd.outfile, io.TextIOWrapper)
         self.assertEqual(cmd.outfile.name, self.fout_path)
 
-        self.assertIsInstance(cmd.backend, MockedBackend)
-        self.assertEqual(cmd.backend.origin, 'http://example.com/')
-        self.assertEqual(cmd.backend.tag, 'test')
+        manager = cmd.archive_manager
+        self.assertIsInstance(manager, ArchiveManager)
+        self.assertEqual(manager.dirpath, self.test_path)
 
         cmd.outfile.close()
 
@@ -522,8 +609,8 @@ class TestBackendCommand(unittest.TestCase):
             BackendCommand.setup_cmd_parser()
 
     @unittest.mock.patch('os.path.expanduser')
-    def test_cache_on_init(self, mock_expanduser):
-        """Test if the cache is set when the class is initialized"""
+    def test_archive_manager_on_init(self, mock_expanduser):
+        """Test if the archive manager is set when the class is initialized"""
 
         mock_expanduser.return_value = self.test_path
 
@@ -533,20 +620,19 @@ class TestBackendCommand(unittest.TestCase):
 
         cmd = MockedBackendCommand(*args)
 
-        cache = cmd.backend.cache
-        self.assertIsInstance(cache, Cache)
-        self.assertEqual(os.path.exists(cache.cache_path), True)
-        self.assertEqual(cache.cache_path,
-                         os.path.join(self.test_path, 'http://example.com/'))
+        manager = cmd.archive_manager
+        self.assertIsInstance(manager, ArchiveManager)
+        self.assertEqual(os.path.exists(manager.dirpath), True)
+        self.assertEqual(manager.dirpath, self.test_path)
 
-        # Due to '--no-cache' is not given, no cache object is set
+        # Due to '--no-archive' is given, Archive Manager isn't set
         args = ['-u', 'jsmith', '-p', '1234', '-t', 'abcd',
-                '--no-cache', '--from-date', '2015-01-01',
+                '--no-archive', '--from-date', '2015-01-01',
                 '--tag', 'test', '--output', self.fout_path,
                 'http://example.com/']
 
         cmd = MockedBackendCommand(*args)
-        self.assertEqual(cmd.backend.cache, None)
+        self.assertEqual(cmd.archive_manager, None)
 
     def test_pre_init(self):
         """Test if pre_init method is called during initialization"""
@@ -568,7 +654,8 @@ class TestBackendCommand(unittest.TestCase):
         """Test run method"""
 
         args = ['-u', 'jsmith', '-p', '1234', '-t', 'abcd',
-                '--cache-path', self.test_path, '--category', 'mocked',
+                '--archive-path', self.test_path, '--category', 'mock_item',
+                '--subtype', 'mocksubtype',
                 '--from-date', '2015-01-01', '--tag', 'test',
                 '--output', self.fout_path, 'http://example.com/']
 
@@ -589,13 +676,13 @@ class TestBackendCommand(unittest.TestCase):
             self.assertEqual(item['uuid'], expected_uuid)
             self.assertEqual(item['tag'], 'test')
 
-        self.assertIsInstance(cmd.backend.cache, Cache)
+    def test_run_fetch_from_archive(self):
+        """Test whether the command runs when fetch from archive is set"""
 
-    def test_run_fetch_cache(self):
-        """Test whether the command runs when fetch from cache is set"""
-
-        args = ['--cache-path', self.test_path, '--fetch-cache',
-                '--from-date', '2015-01-01', '--tag', 'test', '--category', 'mocked',
+        args = ['--archive-path', self.test_path,
+                '--from-date', '2015-01-01', '--tag', 'test',
+                '--category', 'mock_item',
+                '--subtype', 'mocksubtype',
                 '--output', self.fout_path, 'http://example.com/']
 
         cmd = MockedBackendCommand(*args)
@@ -606,25 +693,37 @@ class TestBackendCommand(unittest.TestCase):
 
         self.assertEqual(len(items), 5)
 
+        args = ['--archive-path', self.test_path, '--fetch-archive',
+                '--from-date', '2015-01-01', '--tag', 'test', '--category', 'mock_item',
+                '--subtype', 'mocksubtype',
+                '--output', self.fout_path, 'http://example.com/']
+
+        cmd = MockedBackendCommand(*args)
+        cmd.run()
+        cmd.outfile.close()
+
+        items = [item for item in convert_cmd_output_to_json(self.fout_path)]
+        self.assertEqual(len(items), 5)
+
         for x in range(5):
             item = items[x]
             expected_uuid = uuid('http://example.com/', str(x))
 
-            # MockedBackend sets 'cache' value when
-            # 'fetch_from_cache' is called
+            # ArchiveMockedBackend sets 'archive' value when
+            # 'fetch-archive' option is set. This helps to know
+            # the code is really running
             self.assertEqual(item['data']['item'], x)
-            self.assertEqual(item['data']['cache'], True)
+            self.assertEqual(item['data']['archive'], True)
             self.assertEqual(item['origin'], 'http://example.com/')
             self.assertEqual(item['uuid'], expected_uuid)
             self.assertEqual(item['tag'], 'test')
 
-        self.assertIsInstance(cmd.backend.cache, Cache)
+    def test_run_no_archive(self):
+        """Test whether the command runs when archive is not set"""
 
-    def test_run_no_cache(self):
-        """Test whether the command runs when cache is not set"""
-
-        args = ['--no-cache', '--from-date', '2015-01-01',
+        args = ['--no-archive', '--from-date', '2015-01-01',
                 '--tag', 'test', '--output', self.fout_path,
+                '--category', 'mock_item',
                 'http://example.com/']
 
         cmd = MockedBackendCommand(*args)
@@ -644,7 +743,30 @@ class TestBackendCommand(unittest.TestCase):
             self.assertEqual(item['uuid'], expected_uuid)
             self.assertEqual(item['tag'], 'test')
 
-        self.assertIsNone(cmd.backend.cache)
+    def test_run_not_supported_archive(self):
+        """Test whether the comand runs when archive is not supported"""
+
+        args = ['--from-date', '2015-01-01',
+                '--tag', 'test', '--output', self.fout_path,
+                '--category', 'mock_item',
+                'http://example.com/']
+
+        cmd = NoArchiveBackendCommand(*args)
+        cmd.run()
+        cmd.outfile.close()
+
+        items = [item for item in convert_cmd_output_to_json(self.fout_path)]
+
+        self.assertEqual(len(items), 5)
+
+        for x in range(5):
+            item = items[x]
+            expected_uuid = uuid('http://example.com/', str(x))
+
+            self.assertEqual(item['data']['item'], x)
+            self.assertEqual(item['origin'], 'http://example.com/')
+            self.assertEqual(item['uuid'], expected_uuid)
+            self.assertEqual(item['tag'], 'test')
 
 
 class TestMetadata(unittest.TestCase):
@@ -708,6 +830,264 @@ class TestUUID(unittest.TestCase):
         self.assertRaises(ValueError, uuid, '1', '', '2', '3')
         self.assertRaises(ValueError, uuid, '', '1', '2', '3')
         self.assertRaises(ValueError, uuid, '1', '2', '3', '')
+
+
+class TestFetch(unittest.TestCase):
+    """Unit tests for fetch function"""
+
+    def setUp(self):
+        self.test_path = tempfile.mkdtemp(prefix='perceval_')
+
+    def tearDown(self):
+        shutil.rmtree(self.test_path)
+
+    def test_items(self):
+        """Test whether a set of items is returned"""
+
+        args = {
+            'origin': 'http://example.com/',
+            'category': 'mock_item',
+            'tag': 'test',
+            'subtype': 'mocksubtype',
+            'from-date': str_to_datetime('2015-01-01')
+        }
+
+        items = fetch(CommandBackend, args, manager=None)
+        items = [item for item in items]
+
+        self.assertEqual(len(items), 5)
+
+        for x in range(5):
+            item = items[x]
+            expected_uuid = uuid('http://example.com/', str(x))
+
+            self.assertEqual(item['data']['item'], x)
+            self.assertEqual(item['origin'], 'http://example.com/')
+            self.assertEqual(item['uuid'], expected_uuid)
+            self.assertEqual(item['tag'], 'test')
+
+    def test_items_storing_archive(self):
+        """Test whether items are stored in an archive"""
+
+        manager = ArchiveManager(self.test_path)
+
+        args = {
+            'origin': 'http://example.com/',
+            'category': 'mock_item',
+            'tag': 'test',
+            'subtype': 'mocksubtype',
+            'from-date': str_to_datetime('2015-01-01')
+        }
+
+        items = fetch(CommandBackend, args, manager=manager)
+        items = [item for item in items]
+
+        self.assertEqual(len(items), 5)
+
+        for x in range(5):
+            item = items[x]
+            expected_uuid = uuid('http://example.com/', str(x))
+
+            self.assertEqual(item['data']['item'], x)
+            self.assertEqual(item['origin'], 'http://example.com/')
+            self.assertEqual(item['uuid'], expected_uuid)
+            self.assertEqual(item['tag'], 'test')
+
+        filepaths = manager.search('http://example.com/', 'CommandBackend',
+                                   'mock_item', str_to_datetime('1970-01-01'))
+
+        self.assertEqual(len(filepaths), 1)
+
+        archive = Archive(filepaths[0])
+        self.assertEqual(archive._count_table_rows('archive'), 5)
+
+    def test_remove_archive_on_error(self):
+        """Test whether an archive is removed when an unhandled exception occurs"""
+
+        manager = ArchiveManager(self.test_path)
+
+        args = {
+            'origin': 'http://example.com/',
+            'category': 'mock_item',
+            'tag': 'test',
+            'subtype': 'mocksubtype',
+            'from-date': str_to_datetime('2015-01-01')
+        }
+
+        items = fetch(ErrorCommandBackend, args, manager=manager)
+
+        with self.assertRaises(BackendError):
+            _ = [item for item in items]
+
+        filepaths = manager.search('http://example.com/', 'ErrorCommandBackend',
+                                   'mock_item', str_to_datetime('1970-01-01'))
+
+        self.assertEqual(len(filepaths), 0)
+
+
+class TestFetchFromArchive(unittest.TestCase):
+    """Unit tests for fetch_from_archive function"""
+
+    def setUp(self):
+        self.test_path = tempfile.mkdtemp(prefix='perceval_')
+
+    def tearDown(self):
+        shutil.rmtree(self.test_path)
+
+    def test_archive(self):
+        """Test whether a set of items is fetched from the archive"""
+
+        manager = ArchiveManager(self.test_path)
+
+        args = {
+            'origin': 'http://example.com/',
+            'category': 'mock_item',
+            'tag': 'test',
+            'subtype': 'mocksubtype',
+            'from-date': str_to_datetime('2015-01-01')
+        }
+
+        # First, fetch the items twice to check if several archive
+        # are used
+        items = fetch(CommandBackend, args, manager=manager)
+        items = [item for item in items]
+        self.assertEqual(len(items), 5)
+
+        items = fetch(CommandBackend, args, manager=manager)
+        items = [item for item in items]
+        self.assertEqual(len(items), 5)
+
+        # Fetch items from the archive
+        items = fetch_from_archive(CommandBackend, args, manager,
+                                   'mock_item', str_to_datetime('1970-01-01'))
+        items = [item for item in items]
+
+        self.assertEqual(len(items), 10)
+
+        for x in range(2):
+            for y in range(5):
+                item = items[y + (x * 5)]
+                expected_uuid = uuid('http://example.com/', str(y))
+
+                self.assertEqual(item['data']['item'], y)
+                self.assertEqual(item['data']['archive'], True)
+                self.assertEqual(item['origin'], 'http://example.com/')
+                self.assertEqual(item['uuid'], expected_uuid)
+                self.assertEqual(item['tag'], 'test')
+
+    def test_archived_after(self):
+        """Test if only those items archived after a date are returned"""
+
+        manager = ArchiveManager(self.test_path)
+
+        args = {
+            'origin': 'http://example.com/',
+            'category': 'mock_item',
+            'tag': 'test',
+            'subtype': 'mocksubtype',
+            'from-date': str_to_datetime('2015-01-01')
+        }
+
+        items = fetch(CommandBackend, args, manager=manager)
+        items = [item for item in items]
+        self.assertEqual(len(items), 5)
+
+        archived_dt = datetime_utcnow()
+
+        items = fetch(CommandBackend, args, manager=manager)
+        items = [item for item in items]
+        self.assertEqual(len(items), 5)
+
+        # Fetch items from the archive
+        items = fetch_from_archive(CommandBackend, args, manager,
+                                   'mock_item', str_to_datetime('1970-01-01'))
+        items = [item for item in items]
+        self.assertEqual(len(items), 10)
+
+        # Fetch items archived after the given date
+        items = fetch_from_archive(CommandBackend, args, manager,
+                                   'mock_item', archived_dt)
+        items = [item for item in items]
+        self.assertEqual(len(items), 5)
+
+    def test_no_archived_items(self):
+        """Test when no archived items are available"""
+
+        manager = ArchiveManager(self.test_path)
+
+        args = {
+            'origin': 'http://example.com/',
+            'category': 'mock_item',
+            'tag': 'test',
+            'subtype': 'mocksubtype',
+            'from-date': str_to_datetime('2015-01-01')
+        }
+
+        items = fetch(CommandBackend, args, manager=manager)
+        items = [item for item in items]
+        self.assertEqual(len(items), 5)
+
+        # There aren't items for this category
+        items = fetch_from_archive(CommandBackend, args, manager,
+                                   'alt_item', str_to_datetime('1970-01-01'))
+        items = [item for item in items]
+        self.assertEqual(len(items), 0)
+
+    def test_ignore_corrupted_archive(self):
+        """Check if a corrupted archive is ignored while fetching from archive"""
+
+        def delete_rows(db, table_name):
+            conn = sqlite3.connect(db)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM " + table_name)
+            cursor.close()
+            conn.commit()
+
+        manager = ArchiveManager(self.test_path)
+
+        args = {
+            'origin': 'http://example.com/',
+            'category': 'mock_item',
+            'tag': 'test',
+            'subtype': 'mocksubtype',
+            'from-date': str_to_datetime('2015-01-01')
+        }
+
+        # First, fetch the items twice to check if several archive
+        # are used
+        items = fetch(CommandBackend, args, manager=manager)
+        items = [item for item in items]
+        self.assertEqual(len(items), 5)
+
+        items = fetch(CommandBackend, args, manager=manager)
+        items = [item for item in items]
+        self.assertEqual(len(items), 5)
+
+        # Find archive names to delete the rows of one of them to make it
+        # corrupted
+        filepaths = manager.search('http://example.com/', 'CommandBackend',
+                                   'mock_item', str_to_datetime('1970-01-01'))
+        self.assertEqual(len(filepaths), 2)
+
+        to_remove = filepaths[0]
+        delete_rows(to_remove, 'archive')
+
+        # Fetch items from the archive
+        items = fetch_from_archive(CommandBackend, args, manager,
+                                   'mock_item', str_to_datetime('1970-01-01'))
+        items = [item for item in items]
+
+        self.assertEqual(len(items), 5)
+
+        for x in range(5):
+            item = items[x]
+            expected_uuid = uuid('http://example.com/', str(x))
+
+            self.assertEqual(item['data']['item'], x)
+            self.assertEqual(item['data']['archive'], True)
+            self.assertEqual(item['origin'], 'http://example.com/')
+            self.assertEqual(item['uuid'], expected_uuid)
+            self.assertEqual(item['tag'], 'test')
 
 
 if __name__ == "__main__":

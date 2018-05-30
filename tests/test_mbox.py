@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -26,14 +26,11 @@ import datetime
 import gzip
 import os
 import pkg_resources
-import sys
 import shutil
 import tempfile
 import unittest
+import unittest.mock
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -201,11 +198,6 @@ class TestMBoxBackend(TestBaseMBox):
         self.assertEqual(backend.origin, 'http://example.com/')
         self.assertEqual(backend.tag, 'http://example.com/')
 
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(MBox.has_caching(), False)
-
     def test_has_archiving(self):
         """Test if it returns False when has_archiving is called"""
 
@@ -310,21 +302,41 @@ class TestMBoxBackend(TestBaseMBox):
 
         tmp_path_ign = tempfile.mkdtemp(prefix='perceval_')
 
+        def copy_mbox_side_effect(*args, **kwargs):
+            """Copy a mbox archive or raise IO error for 'mbox_multipart.mbox' archive"""
+
+            error_file = os.path.join(tmp_path_ign, 'mbox_multipart.mbox')
+            mbox = args[0]
+
+            if mbox.filepath == error_file:
+                raise OSError('Mock error')
+
+            tmp_path = tempfile.mktemp(prefix='perceval_')
+
+            with mbox.container as f_in:
+                with open(tmp_path, mode='wb') as f_out:
+                    for l in f_in:
+                        f_out.write(l)
+            return tmp_path
+
         shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data/mbox/mbox_single.mbox'),
                     tmp_path_ign)
         shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data/mbox/mbox_multipart.mbox'),
                     tmp_path_ign)
 
-        # Update file mode to make it unable to access
-        os.chmod(os.path.join(tmp_path_ign, 'mbox_multipart.mbox'), 0o000)
+        # Mock 'copy_mbox' method for forcing to raise an OSError
+        # with file 'data/mbox/mbox_multipart.mbox' to check if
+        # the code ignores this file
+        with unittest.mock.patch('perceval.backends.core.mbox.MBox._copy_mbox') as mock_copy_mbox:
+            mock_copy_mbox.side_effect = copy_mbox_side_effect
 
-        backend = MBox('http://example.com/', tmp_path_ign)
-        messages = [m for m in backend.fetch()]
+            backend = MBox('http://example.com/', tmp_path_ign)
+            messages = [m for m in backend.fetch()]
 
-        # Only one message is read
-        self.assertEqual(len(messages), 1)
-        self.assertEqual(messages[0]['data']['Message-ID'], '<4CF64D10.9020206@domain.com>')
-        self.assertEqual(messages[0]['data']['Date'], 'Wed, 01 Dec 2010 14:26:40 +0100')
+            # Only one message is read
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(messages[0]['data']['Message-ID'], '<4CF64D10.9020206@domain.com>')
+            self.assertEqual(messages[0]['data']['Date'], 'Wed, 01 Dec 2010 14:26:40 +0100')
 
         shutil.rmtree(tmp_path_ign)
 

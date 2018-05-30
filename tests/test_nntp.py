@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -26,14 +26,10 @@ import nntplib
 import os
 import pkg_resources
 import shutil
-import sys
 import tempfile
 import unittest
 import unittest.mock
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.archive import Archive
@@ -42,7 +38,7 @@ from perceval.errors import ArchiveError, ParseError
 from perceval.backends.core.nntp import (NNTP,
                                          NNTTPClient,
                                          NNTPCommand)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 
 NNTP_SERVER = 'nntp.example.com'
@@ -134,11 +130,6 @@ class TestNNTPBackend(unittest.TestCase):
         self.assertEqual(nntp.origin, expected_origin)
         self.assertEqual(nntp.tag, expected_origin)
         self.assertIsNone(nntp.client)
-
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(NNTP.has_caching(), False)
 
     def test_has_archiving(self):
         """Test if it returns True when has_archiving is called"""
@@ -259,7 +250,8 @@ class TestNNTPBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = NNTP(NNTP_SERVER, NNTP_GROUP, archive=self.archive)
+        self.backend_write_archive = NNTP(NNTP_SERVER, NNTP_GROUP, archive=self.archive)
+        self.backend_read_archive = NNTP(NNTP_SERVER, NNTP_GROUP, archive=self.archive)
 
     @unittest.mock.patch('nntplib.NNTP')
     def test_fetch_from_archive(self, mock_nntp):
@@ -462,14 +454,14 @@ class TestNNTPCommand(unittest.TestCase):
         args = ['nntp.example.com',
                 'example.dev.project-link',
                 '--tag', 'test',
-                '--no-cache',
+                '--no-archive',
                 '--offset', '6']
 
         parsed_args = parser.parse(*args)
         self.assertEqual(parsed_args.host, 'nntp.example.com')
         self.assertEqual(parsed_args.group, 'example.dev.project-link')
         self.assertEqual(parsed_args.tag, 'test')
-        self.assertEqual(parsed_args.no_cache, True)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.offset, 6)
 
 

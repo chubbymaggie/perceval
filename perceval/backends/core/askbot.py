@@ -37,6 +37,7 @@ from ...backend import (Backend,
 from ...client import HttpClient
 from ...utils import DEFAULT_DATETIME
 
+CATEGORY_QUESTION = 'question'
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +51,11 @@ class Askbot(Backend):
 
     :param url: Askbot site URL
     :param tag: label used to mark the data
-    :param archive: collect questions already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.4.0'
+    version = '0.6.3'
+
+    CATEGORIES = [CATEGORY_QUESTION]
 
     def __init__(self, url, tag=None, archive=None):
         origin = url
@@ -62,12 +65,13 @@ class Askbot(Backend):
         self.client = None
         self.ab_parser = AskbotParser()
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_QUESTION, from_date=DEFAULT_DATETIME):
         """Fetch the questions/answers from the repository.
 
         The method retrieves, from an Askbot site, the questions and answers
         updated since the given date.
 
+        :param category: the category of items to fetch
         :param from_date: obtain questions/answers updated since this date
 
         :returns: a generator of items
@@ -76,12 +80,18 @@ class Askbot(Backend):
             from_date = DEFAULT_DATETIME
 
         kwargs = {'from_date': from_date}
-        items = super().fetch("question", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the questions"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the questions
+
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
 
         from_date = datetime_to_utc(kwargs['from_date']).timestamp()
 
@@ -110,14 +120,6 @@ class Askbot(Backend):
         return True
 
     @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
-
-    @classmethod
     def has_archiving(cls):
         """Returns whether it supports archiving items on the fetch process.
 
@@ -132,7 +134,7 @@ class Askbot(Backend):
         This backend only generates one type of item which is
         'question'.
         """
-        return 'question'
+        return CATEGORY_QUESTION
 
     @staticmethod
     def metadata_id(item):
@@ -433,6 +435,7 @@ class AskbotParser:
         for bs_answer in bs_answers:
             answer_id = bs_answer.attrs["data-post-id"]
             votes_element = bs_answer.select("div.vote-number")[0].text
+            accepted_answer = bs_answer.select("div.answer-img-accept")[0].get('title').endswith("correct")
             # Select the body of the answer
             body = bs_answer.select("div.post-body")
             # Get the user information container and parse it
@@ -445,7 +448,8 @@ class AskbotParser:
             # Generate the answer object
             answer = {'id': answer_id,
                       'score': votes_element,
-                      'summary': body
+                      'summary': body,
+                      'accepted': accepted_answer
                       }
             # Update the object with the information in the answer container
             answer.update(answer_container)
@@ -500,12 +504,8 @@ class AskbotParser:
             if update_info.select("img.flag"):
                 flag = update_info.select("img.flag")[0].attrs["alt"]
                 user_info['country'] = re.sub("flag of ", "", flag)
-            return user_info
-        elif update_info.select("p.tip"):
-            user_info = "This post is a wiki"
-            return user_info
-        else:
-            return
+
+        return user_info
 
     @staticmethod
     def _find_question_container(bs_question):
@@ -525,7 +525,8 @@ class AskbotCommand(BackendCommand):
     def setup_cmd_parser():
         """Returns the Askbot argument parser."""
 
-        parser = BackendCommandArgumentParser(from_date=True)
+        parser = BackendCommandArgumentParser(from_date=True,
+                                              archive=True)
 
         # Required arguments
         parser.parser.add_argument('url',

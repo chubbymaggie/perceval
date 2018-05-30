@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -38,7 +38,7 @@ from ...client import HttpClient
 from ...errors import BackendError, ParseError
 from ...utils import DEFAULT_DATETIME, xml_to_dict
 
-
+CATEGORY_BUG = "bug"
 MAX_BUGS = 200  # Maximum number of bugs per query
 MAX_BUGS_CSV = 10000  # Maximum number of bugs per CSV query
 
@@ -58,17 +58,18 @@ class Bugzilla(Backend):
     :param password: Bugzilla user password
     :param max_bugs: maximum number of bugs requested on the same query
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: collect issues already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.8.0'
+    version = '0.10.3'
+
+    CATEGORIES = [CATEGORY_BUG]
 
     def __init__(self, url, user=None, password=None,
                  max_bugs=MAX_BUGS, max_bugs_csv=MAX_BUGS_CSV,
-                 tag=None, cache=None, archive=None):
+                 tag=None, archive=None):
         origin = url
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.url = url
         self.user = user
         self.password = password
@@ -76,12 +77,13 @@ class Bugzilla(Backend):
         self.client = None
         self.max_bugs = max(1, max_bugs)
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_BUG, from_date=DEFAULT_DATETIME):
         """Fetch the bugs from the repository.
 
         The method retrieves, from a Bugzilla repository, the bugs
         updated since the given date.
 
+        :param category: the category of items to fetch
         :param from_date: obtain bugs updated since this date
 
         :returns: a generator of bugs
@@ -90,12 +92,18 @@ class Bugzilla(Backend):
             from_date = DEFAULT_DATETIME
 
         kwargs = {"from_date": from_date}
-        items = super().fetch("bug", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the bugs"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the bugs
+
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
 
         from_date = kwargs['from_date']
 
@@ -122,14 +130,6 @@ class Bugzilla(Backend):
 
         logger.info("Fetch process completed: %s/%s bugs fetched",
                     nbugs, tbugs)
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -179,7 +179,7 @@ class Bugzilla(Backend):
         This backend only generates one type of item which is
         'bug'.
         """
-        return 'bug'
+        return CATEGORY_BUG
 
     @staticmethod
     def parse_buglist(raw_csv):
@@ -305,7 +305,8 @@ class Bugzilla(Backend):
         """Init client"""
 
         return BugzillaClient(self.url, user=self.user, password=self.password,
-                              max_bugs_csv=self.max_bugs_csv, archive=self.archive, from_archive=from_archive)
+                              max_bugs_csv=self.max_bugs_csv,
+                              archive=self.archive, from_archive=from_archive)
 
     def __fetch_buglist(self, from_date):
         buglist = self.__fetch_and_parse_buglist_page(from_date)
@@ -352,7 +353,7 @@ class BugzillaCommand(BackendCommand):
 
         parser = BackendCommandArgumentParser(from_date=True,
                                               basic_auth=True,
-                                              cache=False)
+                                              archive=True)
 
         # Bugzilla options
         group = parser.parser.add_argument_group('Bugzilla arguments')
@@ -553,6 +554,28 @@ class BugzillaClient(HttpClient):
         req = self.fetch(url, payload=params)
 
         return req.text
+
+    @staticmethod
+    def sanitize_for_archive(url, headers, payload):
+        """Sanitize payload of a HTTP request by removing the login and password information
+        before storing/retrieving archived items
+
+        :param: url: HTTP url request
+        :param: headers: HTTP headers request
+        :param: payload: HTTP payload request
+
+        :returns url, headers and the sanitized payload
+        """
+        if BugzillaClient.PBUGZILLA_LOGIN in payload:
+            payload.pop(BugzillaClient.PBUGZILLA_LOGIN)
+
+        if BugzillaClient.PBUGZILLA_PASSWORD in payload:
+            payload.pop(BugzillaClient.PBUGZILLA_PASSWORD)
+
+        if BugzillaClient.PLOGIN in payload:
+            payload.pop(BugzillaClient.PLOGIN)
+
+        return url, headers, payload
 
     def __fetch_version(self):
         response = self.metadata()

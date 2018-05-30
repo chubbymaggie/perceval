@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,7 +23,6 @@
 
 import os
 import shutil
-import sys
 import time
 import tempfile
 import unittest
@@ -32,10 +31,9 @@ import httpretty
 import pkg_resources
 import requests
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
+
+from grimoirelab.toolkit.datetime import datetime_utcnow
 
 from perceval.archive import Archive
 from perceval.client import HttpClient, RateLimitHandler
@@ -50,6 +48,8 @@ CLIENT_IRONMAN_URL = "https://gateway.marvel.com/v1/public/characters/4"
 
 class MockedClient(HttpClient, RateLimitHandler):
 
+    sanitize = False
+
     def __init__(self, base_url, sleep_time=HttpClient.DEFAULT_SLEEP_TIME,
                  max_retries=HttpClient.MAX_RETRIES,
                  extra_status_forcelist=None,
@@ -59,9 +59,10 @@ class MockedClient(HttpClient, RateLimitHandler):
                  rate_limit_header=RateLimitHandler.RATE_LIMIT_HEADER,
                  rate_limit_reset_header=RateLimitHandler.RATE_LIMIT_RESET_HEADER,
                  define_calculate_time_to_reset=True,
-                 archive=None, from_archive=False):
+                 archive=None, from_archive=False, sanitize=False):
 
         self.define_calculate_time_to_reset = define_calculate_time_to_reset
+        MockedClient.sanitize = sanitize
         super().__init__(base_url, sleep_time=sleep_time, max_retries=max_retries,
                          extra_status_forcelist=extra_status_forcelist,
                          extra_retry_after_status=extra_retry_after_status,
@@ -73,7 +74,7 @@ class MockedClient(HttpClient, RateLimitHandler):
 
     def calculate_time_to_reset(self):
         if self.define_calculate_time_to_reset:
-            return self.rate_limit_reset_ts
+            return -1
         else:
             return super().calculate_time_to_reset()
 
@@ -312,6 +313,15 @@ class TestHttpClient(unittest.TestCase):
         with self.assertRaises(requests.exceptions.HTTPError):
             _ = client.fetch(CLIENT_SPIDERMAN_URL)
 
+    def test_sanitize_for_archive(self):
+        """Test whether the default sanitize method works properly"""
+
+        url, headers, payload = HttpClient.sanitize_for_archive("url", "headers", "payload")
+
+        self.assertEqual(url, "url")
+        self.assertEqual(headers, "headers")
+        self.assertEqual(payload, "payload")
+
 
 class TestRateLimitHandler(unittest.TestCase):
     """RateLimit handler tests"""
@@ -404,6 +414,21 @@ class TestRateLimitHandler(unittest.TestCase):
 
         with self.assertRaises(NotImplementedError):
             client.update_rate_limit(response)
+
+    def test_sleep_for_rate_limit(self):
+        """Test whether the time to reset is zero if the sleep time is negative"""
+
+        client = MockedClient(CLIENT_API_URL, sleep_time=0.1, max_retries=1,
+                              min_rate_to_sleep=100,
+                              sleep_for_rate=True)
+        client.rate_limit = 50
+        self.rate_limit_reset_ts = -1
+
+        before = datetime_utcnow().replace(microsecond=0).timestamp()
+        client.sleep_for_rate_limit()
+        after = datetime_utcnow().replace(microsecond=0).timestamp()
+
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -34,6 +34,7 @@ from ...backend import (Backend,
 from ...client import HttpClient
 from ...utils import DEFAULT_DATETIME
 
+CATEGORY_ISSUE = "issue"
 
 LAUNCHPAD_URL = "https://launchpad.net/"
 LAUNCHPAD_API_URL = 'https://api.launchpad.net/1.0'
@@ -55,18 +56,19 @@ class Launchpad(Backend):
     :param items_per_page: number of items in a retrieved page
     :param sleep_time: time to sleep in case of connection problems
     :param tag: label used to mark the data
-    :param cache: use issues already retrieved in cache
-    :param archive: collect issues already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.4.0'
+    version = '0.6.2'
+
+    CATEGORIES = [CATEGORY_ISSUE]
 
     def __init__(self, distribution, package=None,
                  items_per_page=ITEMS_PER_PAGE, sleep_time=SLEEP_TIME,
-                 tag=None, cache=None, archive=None):
+                 tag=None, archive=None):
 
         origin = urijoin(LAUNCHPAD_URL, distribution)
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.distribution = distribution
         self.package = package
         self.items_per_page = items_per_page
@@ -75,12 +77,13 @@ class Launchpad(Backend):
         self.client = None
         self._users = {}  # internal users cache
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_ISSUE, from_date=DEFAULT_DATETIME):
         """Fetch the issues from a project (distribution/package).
 
         The method retrieves, from a Launchpad project, the issues
         updated since the given date.
 
+        :param category: the category of items to fetch
         :param from_date: obtain issues updated since this date
 
         :returns: a generator of issues
@@ -91,13 +94,18 @@ class Launchpad(Backend):
         from_date = datetime_to_utc(from_date)
 
         kwargs = {'from_date': from_date}
-        items = super().fetch("issue", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the issues"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the issues
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
 
         logger.info("Fetching issues of '%s' distribution from %s",
@@ -110,14 +118,6 @@ class Launchpad(Backend):
             nissues += 1
 
         logger.info("Fetch process completed: %s issues fetched", nissues)
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -166,7 +166,7 @@ class Launchpad(Backend):
         This backend only generates one type of item which is
         'issue'.
         """
-        return 'issue'
+        return CATEGORY_ISSUE
 
     def _init_client(self, from_archive=False):
         """Init client"""
@@ -454,7 +454,7 @@ class LaunchpadCommand(BackendCommand):
         """Returns the Launchpad argument parser."""
 
         parser = BackendCommandArgumentParser(from_date=True,
-                                              cache=True,
+                                              archive=True,
                                               token_auth=False)
 
         # Optional arguments

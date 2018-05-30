@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -22,6 +22,7 @@
 
 import json
 import logging
+import re
 
 from grimoirelab.toolkit.uris import urijoin
 
@@ -30,12 +31,12 @@ from ...backend import (Backend,
                         BackendCommandArgumentParser)
 from ...client import HttpClient
 
-
-logger = logging.getLogger(__name__)
-
+CATEGORY_MESSAGE = "message"
 
 TELEGRAM_URL = 'https://telegram.org'
 DEFAULT_OFFSET = 1
+
+logger = logging.getLogger(__name__)
 
 
 class Telegram(Backend):
@@ -59,21 +60,22 @@ class Telegram(Backend):
     :param bot: name of the bot
     :param bot_token: authentication token used by the bot
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: collect message already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.7.0'
+    version = '0.9.3'
 
-    def __init__(self, bot, bot_token, tag=None, cache=None, archive=None):
+    CATEGORIES = [CATEGORY_MESSAGE]
+
+    def __init__(self, bot, bot_token, tag=None, archive=None):
         origin = urijoin(TELEGRAM_URL, bot)
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.bot = bot
         self.bot_token = bot_token
 
         self.client = None
 
-    def fetch(self, offset=DEFAULT_OFFSET, chats=None):
+    def fetch(self, category=CATEGORY_MESSAGE, offset=DEFAULT_OFFSET, chats=None):
         """Fetch the messages the bot can read from the server.
 
         The method retrieves, from the Telegram server, the messages
@@ -84,6 +86,7 @@ class Telegram(Backend):
         messages sent to any of these will be returned. An empty list
         will return no messages.
 
+        :param category: the category of items to fetch
         :param offset: obtain messages from this offset
         :param chats: list of chat names used to filter messages
 
@@ -95,13 +98,18 @@ class Telegram(Backend):
             offset = DEFAULT_OFFSET
 
         kwargs = {"offset": offset, "chats": chats}
-        items = super().fetch("message", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the messages"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the messages
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         offset = kwargs['offset']
         chats = kwargs['chats']
 
@@ -157,14 +165,6 @@ class Telegram(Backend):
         return item
 
     @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
-
-    @classmethod
     def has_archiving(cls):
         """Returns whether it supports archiving items on the fetch process.
 
@@ -210,7 +210,7 @@ class Telegram(Backend):
         This backend only generates one type of item which is
         'message'.
         """
-        return 'message'
+        return CATEGORY_MESSAGE
 
     @staticmethod
     def parse_messages(raw_json):
@@ -268,7 +268,7 @@ class TelegramCommand(BackendCommand):
         }
         parser = BackendCommandArgumentParser(offset=True,
                                               token_auth=True,
-                                              cache=True,
+                                              archive=True,
                                               aliases=aliases)
 
         # Backend token is required
@@ -326,6 +326,21 @@ class TelegramBotClient(HttpClient):
         response = self._call(self.UPDATES_METHOD, params)
 
         return response
+
+    @staticmethod
+    def sanitize_for_archive(url, headers, payload):
+        """Sanitize URL of a HTTP request by removing the token information
+        before storing/retrieving archived items
+
+        :param: url: HTTP url request
+        :param: headers: HTTP headers request
+        :param: payload: HTTP payload request
+
+        :returns the sanitized url, plus the headers and payload
+        """
+        url = re.sub('bot.*/', 'botXXXXX/', url)
+
+        return url, headers, payload
 
     def _call(self, method, params):
         """Retrive the given resource.

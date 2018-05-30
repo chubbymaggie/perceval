@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -24,11 +24,12 @@
 import json
 import logging
 import requests
-import time
 
 import urllib.parse
 
-from grimoirelab.toolkit.datetime import datetime_to_utc, str_to_datetime
+from grimoirelab.toolkit.datetime import (datetime_to_utc,
+                                          datetime_utcnow,
+                                          str_to_datetime)
 from grimoirelab.toolkit.uris import urijoin
 
 from ...backend import (Backend,
@@ -36,6 +37,8 @@ from ...backend import (Backend,
                         BackendCommandArgumentParser)
 from ...client import HttpClient, RateLimitHandler
 from ...utils import DEFAULT_DATETIME
+
+CATEGORY_ISSUE = "issue"
 
 GITLAB_URL = "https://gitlab.com/"
 GITLAB_API_URL = "https://gitlab.com/api/v4"
@@ -66,23 +69,23 @@ class GitLab(Backend):
         when no value is set the backend will be fetch the data
         from the GitLab public site.
     :param tag: label used to mark the data
-    :param cache: use issues already retrieved in cache
-    :param archive: an archive to store/read fetched data
+    :param archive: archive to store/retrieve items
     :param sleep_for_rate: sleep until rate limit is reset
     :param min_rate_to_sleep: minimun rate needed to sleep until
          it will be reset
     """
-    version = '0.1.0'
+    version = '0.3.4'
+
+    CATEGORIES = [CATEGORY_ISSUE]
 
     def __init__(self, owner=None, repository=None,
-                 api_token=None, base_url=None, tag=None,
-                 cache=None, archive=None,
+                 api_token=None, base_url=None, tag=None, archive=None,
                  sleep_for_rate=False, min_rate_to_sleep=MIN_RATE_LIMIT):
 
         origin = base_url if base_url else GITLAB_URL
         origin = urijoin(origin, owner, repository)
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.base_url = base_url
         self.owner = owner
         self.repository = repository
@@ -92,12 +95,13 @@ class GitLab(Backend):
         self.client = None
         self._users = {}  # internal users cache
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_ISSUE, from_date=DEFAULT_DATETIME):
         """Fetch the issues from the repository.
 
         The method retrieves, from a GitLab repository, the issues
         updated since the given date.
 
+        :param category: the category of items to fetch
         :param from_date: obtain issues updated since this date
 
         :returns: a generator of issues
@@ -108,13 +112,18 @@ class GitLab(Backend):
         from_date = datetime_to_utc(from_date)
 
         kwargs = {'from_date': from_date}
-        items = super().fetch("issue", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the issues"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the issues
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
 
         issues_groups = self.client.issues(from_date=from_date)
@@ -130,14 +139,6 @@ class GitLab(Backend):
                     self.__get_issue_award_emoji(issue['iid'])
 
                 yield issue
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -185,7 +186,7 @@ class GitLab(Backend):
         This backend only generates one type of item which is
         'issue'.
         """
-        return 'issue'
+        return CATEGORY_ISSUE
 
     def _init_client(self, from_archive=False):
         """Init client"""
@@ -373,12 +374,31 @@ class GitLabClient(HttpClient, RateLimitHandler):
         between the current date and the next date when the token is fully regenerated.
         """
 
-        return self.rate_limit_reset_ts - (int(time.time()) + 1)
+        time_to_reset = self.rate_limit_reset_ts - (datetime_utcnow().replace(microsecond=0).timestamp() + 1)
+
+        if time_to_reset < 0:
+            time_to_reset = 0
+
+        return time_to_reset
 
     def fetch(self, url, payload=None, headers=None, method=HttpClient.GET, stream=False):
-        self.sleep_for_rate_limit()
+        """Fetch the data from a given URL.
+
+        :param url: link to the resource
+        :param payload: payload of the request
+        :param headers: headers of the request
+        :param method: type of request call (GET or POST)
+        :param stream: defer downloading the response body until the response content is available
+
+        :returns a response object
+        """
+        if not self.from_archive:
+            self.sleep_for_rate_limit()
+
         response = super().fetch(url, payload, headers, method, stream)
-        self.update_rate_limit(response)
+
+        if not self.from_archive:
+            self.update_rate_limit(response)
 
         return response
 
@@ -455,7 +475,7 @@ class GitLabCommand(BackendCommand):
 
         parser = BackendCommandArgumentParser(from_date=True,
                                               token_auth=True,
-                                              cache=True)
+                                              archive=True)
 
         # GitLab options
         group = parser.parser.add_argument_group('GitLab arguments')

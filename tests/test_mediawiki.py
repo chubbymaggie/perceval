@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -27,16 +27,13 @@ import dateutil
 import httpretty
 import os
 import pkg_resources
-import sys
 import unittest
 import urllib
+import unittest.mock
 
 from grimoirelab.toolkit.datetime import (datetime_to_utc,
                                           str_to_datetime)
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -44,7 +41,7 @@ from perceval.utils import DEFAULT_DATETIME
 from perceval.backends.core.mediawiki import (MediaWiki,
                                               MediaWikiCommand,
                                               MediaWikiClient)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 
 MEDIAWIKI_SERVER_URL = 'http://example.com'
@@ -167,11 +164,6 @@ class TestMediaWikiBackend(unittest.TestCase):
         self.assertEqual(mediawiki.origin, MEDIAWIKI_SERVER_URL)
         self.assertEqual(mediawiki.tag, MEDIAWIKI_SERVER_URL)
 
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(MediaWiki.has_caching(), False)
-
     def test_has_archiving(self):
         """Test if it returns True when has_archiving is called"""
 
@@ -183,10 +175,14 @@ class TestMediaWikiBackend(unittest.TestCase):
         self.assertEqual(MediaWiki.has_resuming(), False)
 
     @httpretty.activate
-    def _test_fetch_version(self, version, from_date=None, reviews_api=False):
+    @unittest.mock.patch('perceval.backends.core.mediawiki.datetime_utcnow')
+    def _test_fetch_version(self, version, mock_utcnow, from_date=None, reviews_api=False):
         """Test whether the pages with their reviews are returned"""
 
         HTTPServer.routes(version)
+
+        mock_utcnow.return_value = datetime.datetime(2016, 6, 10,
+                                                     tzinfo=dateutil.tz.tzutc())
 
         # Test fetch pages with their reviews
         mediawiki = MediaWiki(MEDIAWIKI_SERVER_URL)
@@ -222,7 +218,7 @@ class TestMediaWikiBackend_1_23(TestMediaWikiBackend):
     @httpretty.activate
     def test_fetch_from_date(self):
         from_date = dateutil.parser.parse("2016-06-23 15:35")
-        self._test_fetch_version("1.23", from_date)
+        self._test_fetch_version("1.23", from_date=from_date)
 
     @httpretty.activate
     def test_fetch_empty(self):
@@ -246,8 +242,8 @@ class TestMediaWikiBackend_1_28(TestMediaWikiBackend):
     @httpretty.activate
     def test_fetch_from_date(self):
         from_date = dateutil.parser.parse("2016-06-23 15:35")
-        self._test_fetch_version("1.28", from_date)
-        self._test_fetch_version("1.28", from_date, reviews_api=True)
+        self._test_fetch_version("1.28", from_date=from_date)
+        self._test_fetch_version("1.28", from_date=from_date, reviews_api=True)
 
     @httpretty.activate
     def test_fetch_empty_1_28(self):
@@ -266,16 +262,19 @@ class TestMediaWikiBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = MediaWiki(MEDIAWIKI_SERVER_URL, archive=self.archive)
+        self.backend_write_archive = MediaWiki(MEDIAWIKI_SERVER_URL, archive=self.archive)
+        self.backend_read_archive = MediaWiki(MEDIAWIKI_SERVER_URL, archive=self.archive)
 
     @httpretty.activate
-    def _test_version(self, version, reviews_api=False):
+    @unittest.mock.patch('perceval.backends.core.mediawiki.datetime_utcnow')
+    def _test_version(self, version, mock_utcnow, reviews_api=False):
         """Test whether the archive works"""
 
         HTTPServer.routes(version)
+        mock_utcnow.return_value = datetime.datetime(2016, 6, 10,
+                                                     tzinfo=dateutil.tz.tzutc())
 
         from_date = dateutil.parser.parse("2016-06-23 15:35")
-        self.backend._test_mode = True
 
         self._test_fetch_from_archive(from_date=from_date, reviews_api=reviews_api)
 
@@ -497,13 +496,13 @@ class TestMediaWikiCommand(unittest.TestCase):
         self.assertIsInstance(parser, BackendCommandArgumentParser)
 
         args = ['--tag', 'test',
-                '--no-cache', '--from-date', '1970-01-01',
+                '--no-archive', '--from-date', '1970-01-01',
                 MEDIAWIKI_SERVER_URL]
 
         parsed_args = parser.parse(*args)
         self.assertEqual(parsed_args.url, MEDIAWIKI_SERVER_URL)
         self.assertEqual(parsed_args.tag, 'test')
-        self.assertEqual(parsed_args.no_cache, True)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
 
 

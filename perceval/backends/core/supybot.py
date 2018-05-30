@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -35,6 +35,7 @@ from ...backend import (Backend,
 from ...errors import ParseError
 from ...utils import DEFAULT_DATETIME
 
+CATEGORY_MESSAGE = "message"
 
 logger = logging.getLogger(__name__)
 
@@ -58,24 +59,26 @@ class Supybot(Backend):
         IRC channel
     :param dirpath: directory path where the archives are stored
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: an archive to retrieve/store data fetched by the backend
+    :param archive: archive to store/retrieve items
     """
-    version = '0.6.0'
+    version = '0.8.2'
 
-    def __init__(self, uri, dirpath, tag=None, cache=None, archive=None):
+    CATEGORIES = [CATEGORY_MESSAGE]
+
+    def __init__(self, uri, dirpath, tag=None, archive=None):
         origin = uri
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.uri = uri
         self.dirpath = dirpath
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_MESSAGE, from_date=DEFAULT_DATETIME):
         """Fetch the messages from the Supybot IRC logger.
 
         The method parsers and returns the messages saved on the
         IRC log files and stored by Supybot in `dirpath`.
 
+        :param category: the category of items to fetch
         :param from_date: obtain messages since this date
 
         :returns: a generator of messages
@@ -86,13 +89,18 @@ class Supybot(Backend):
         from_date = datetime_to_utc(from_date)
 
         kwargs = {'from_date': from_date}
-        items = super().fetch("message", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the messages"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the messages
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
 
         logger.info("Fetching messages of '%s' from %s",
@@ -117,14 +125,6 @@ class Supybot(Backend):
 
         logger.info("Fetch process completed: %s messages fetched",
                     nmessages)
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -178,7 +178,7 @@ class Supybot(Backend):
         This backend only generates one type of item which is
         'message'.
         """
-        return 'message'
+        return CATEGORY_MESSAGE
 
     @staticmethod
     def parse_supybot_log(filepath):

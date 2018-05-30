@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -33,11 +33,12 @@ from ...client import HttpClient
 from ...errors import BaseError
 from ...utils import DEFAULT_DATETIME
 
-
-logger = logging.getLogger(__name__)
+CATEGORY_MESSAGE = "message"
 
 SLACK_URL = 'https://slack.com/'
 MAX_ITEMS = 1000
+
+logger = logging.getLogger(__name__)
 
 
 class Slack(Backend):
@@ -54,16 +55,17 @@ class Slack(Backend):
     :param api_token: token or key needed to use the API
     :param max_items: maximum number of message requested on the same query
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: collect messages already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.4.0'
+    version = '0.6.4'
+
+    CATEGORIES = [CATEGORY_MESSAGE]
 
     def __init__(self, channel, api_token, max_items=MAX_ITEMS,
-                 tag=None, cache=None, archive=None):
+                 tag=None, archive=None):
         origin = urijoin(SLACK_URL, channel)
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.channel = channel
         self.api_token = api_token
         self.max_items = max_items
@@ -71,12 +73,13 @@ class Slack(Backend):
 
         self._users = {}
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_MESSAGE, from_date=DEFAULT_DATETIME):
         """Fetch the messages from the channel.
 
         This method fetches the messages stored on the channel that were
         sent since the given date.
 
+        :param category: the category of items to fetch
         :param from_date: obtain messages sent since this date
 
         :returns: a generator of messages
@@ -85,16 +88,23 @@ class Slack(Backend):
             from_date = DEFAULT_DATETIME
 
         from_date = datetime_to_utc(from_date)
+        latest = datetime_utcnow().timestamp()
 
-        kwargs = {'from_date': from_date}
-        items = super().fetch("message", **kwargs)
+        kwargs = {'from_date': from_date, 'latest': latest}
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the messages"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the messages
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
+        latest = kwargs['latest']
 
         logger.info("Fetching messages of '%s' channel from %s",
                     self.channel, str(from_date))
@@ -103,7 +113,6 @@ class Slack(Backend):
         channel_info = self.parse_channel_info(raw_info)
 
         oldest = datetime_to_utc(from_date).timestamp()
-        latest = datetime_utcnow().timestamp()
 
         # Minimum value supported by Slack is 0 not 0.0
         if oldest == 0.0:
@@ -145,14 +154,6 @@ class Slack(Backend):
                     latest = float(message['ts'])
 
         logger.info("Fetch process completed: %s message fetched", nmsgs)
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -211,7 +212,7 @@ class Slack(Backend):
         This backend only generates one type of item which is
         'message'.
         """
-        return 'message'
+        return CATEGORY_MESSAGE
 
     @staticmethod
     def parse_channel_info(raw_channel_info):
@@ -356,6 +357,22 @@ class SlackClient(HttpClient):
 
         return response
 
+    @staticmethod
+    def sanitize_for_archive(url, headers, payload):
+        """Sanitize payload of a HTTP request by removing the token information
+        before storing/retrieving archived items
+
+        :param: url: HTTP url request
+        :param: headers: HTTP headers request
+        :param: payload: HTTP payload request
+
+        :returns url, headers and the sanitized payload
+        """
+        if SlackClient.PTOKEN in payload:
+            payload.pop(SlackClient.PTOKEN)
+
+        return url, headers, payload
+
     def _fetch(self, resource, params):
         """Fetch a resource.
 
@@ -391,7 +408,7 @@ class SlackCommand(BackendCommand):
 
         parser = BackendCommandArgumentParser(from_date=True,
                                               token_auth=True,
-                                              cache=True)
+                                              archive=True)
 
         # Backend token is required
         action = parser.parser._option_string_actions['--api-token']

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -21,19 +21,16 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+import copy
 import datetime
 import os
 import shutil
-import sys
 import unittest
 
 import httpretty
 import pkg_resources
 import requests
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -42,7 +39,7 @@ from perceval.utils import DEFAULT_DATETIME
 from perceval.backends.core.bugzilla import (Bugzilla,
                                              BugzillaCommand,
                                              BugzillaClient)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 
 BUGZILLA_SERVER_URL = 'http://example.com'
@@ -85,11 +82,6 @@ class TestBugzillaBackend(unittest.TestCase):
         self.assertEqual(bg.url, BUGZILLA_SERVER_URL)
         self.assertEqual(bg.origin, BUGZILLA_SERVER_URL)
         self.assertEqual(bg.tag, BUGZILLA_SERVER_URL)
-
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(Bugzilla.has_caching(), False)
 
     def test_has_archiving(self):
         """Test if it returns True when has_archiving is called"""
@@ -483,8 +475,14 @@ class TestBugzillaBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = Bugzilla(BUGZILLA_SERVER_URL, max_bugs=5, max_bugs_csv=500,
-                                archive=self.archive)
+        self.backend_write_archive = Bugzilla(BUGZILLA_SERVER_URL,
+                                              user='jsmith@example.com', password='1234',
+                                              max_bugs=5, max_bugs_csv=500,
+                                              archive=self.archive)
+        self.backend_read_archive = Bugzilla(BUGZILLA_SERVER_URL,
+                                             user='jreno@example.com', password='5678',
+                                             max_bugs=5, max_bugs_csv=500,
+                                             archive=self.archive)
 
     def tearDown(self):
         shutil.rmtree(self.test_path)
@@ -515,6 +513,10 @@ class TestBugzillaBackendArchive(TestCaseBackendArchive):
 
             return (200, headers, body)
 
+        httpretty.register_uri(httpretty.POST,
+                               BUGZILLA_LOGIN_URL,
+                               body="index.cgi?logout=1",
+                               status=200)
         httpretty.register_uri(httpretty.GET,
                                BUGZILLA_BUGLIST_URL,
                                responses=[
@@ -560,6 +562,10 @@ class TestBugzillaBackendArchive(TestCaseBackendArchive):
 
             return (200, headers, body)
 
+        httpretty.register_uri(httpretty.POST,
+                               BUGZILLA_LOGIN_URL,
+                               body="index.cgi?logout=1",
+                               status=200)
         httpretty.register_uri(httpretty.GET,
                                BUGZILLA_BUGLIST_URL,
                                responses=[
@@ -586,6 +592,10 @@ class TestBugzillaBackendArchive(TestCaseBackendArchive):
         """Test whether it works when no bugs are fetched from archive"""
 
         body = read_file('data/bugzilla/bugzilla_version.xml')
+        httpretty.register_uri(httpretty.POST,
+                               BUGZILLA_LOGIN_URL,
+                               body="index.cgi?logout=1",
+                               status=200)
         httpretty.register_uri(httpretty.GET,
                                BUGZILLA_METADATA_URL,
                                body=body, status=200)
@@ -717,6 +727,7 @@ class TestBugzillaCommand(unittest.TestCase):
                 '--max-bugs', '10', '--max-bugs-csv', '5',
                 '--tag', 'test',
                 '--from-date', '1970-01-01',
+                '--no-archive',
                 BUGZILLA_SERVER_URL]
 
         parsed_args = parser.parse(*args)
@@ -725,6 +736,7 @@ class TestBugzillaCommand(unittest.TestCase):
         self.assertEqual(parsed_args.max_bugs, 10)
         self.assertEqual(parsed_args.max_bugs_csv, 5)
         self.assertEqual(parsed_args.tag, 'test')
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.url, BUGZILLA_SERVER_URL)
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
 
@@ -1010,6 +1022,24 @@ class TestBugzillaClient(unittest.TestCase):
         self.assertEqual(req.method, 'GET')
         self.assertRegex(req.path, '/show_activity.cgi')
         self.assertDictEqual(req.querystring, expected)
+
+    def test_sanitize_for_archive(self):
+        """Test whether the sanitize method works properly"""
+
+        url = "http://example.com"
+        headers = "headers-information"
+        payload = {'GoAheadAndLogIn': 'Log in',
+                   'Bugzilla_password': '1234',
+                   'Bugzilla_login': 'jsmith@example.com'}
+
+        s_url, s_headers, s_payload = BugzillaClient.sanitize_for_archive(url, headers, copy.deepcopy(payload))
+        payload.pop('GoAheadAndLogIn')
+        payload.pop('Bugzilla_password')
+        payload.pop('Bugzilla_login')
+
+        self.assertEqual(url, s_url)
+        self.assertEqual(headers, s_headers)
+        self.assertEqual(payload, s_payload)
 
 
 if __name__ == "__main__":

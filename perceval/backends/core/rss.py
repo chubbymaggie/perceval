@@ -31,6 +31,7 @@ from ...backend import (Backend,
                         BackendCommandArgumentParser)
 from ...client import HttpClient
 
+CATEGORY_ENTRY = "entry"
 
 logger = logging.getLogger(__name__)
 
@@ -44,36 +45,43 @@ class RSS(Backend):
 
     :param url: RSS url
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: collect entries already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.3.0'
+    version = '0.5.2'
 
-    def __init__(self, url, tag=None, cache=None, archive=None):
+    CATEGORIES = [CATEGORY_ENTRY]
+
+    def __init__(self, url, tag=None, archive=None):
         origin = url
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.url = url
         self.client = None
 
-    def fetch(self):
+    def fetch(self, category=CATEGORY_ENTRY):
         """Fetch the entries from the url.
 
         The method retrieves all entries from a RSS url
 
+        :param category: the category of items to fetch
+
         :returns: a generator of entries
         """
         kwargs = {}
-        items = super().fetch("entry", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch entries"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the entries
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         logger.info("Looking for rss entries at feed '%s'", self.url)
 
-        self._purge_cache_queue()
         nentries = 0  # number of entries
 
         raw_entries = self.client.get_entries()
@@ -87,14 +95,6 @@ class RSS(Backend):
     @classmethod
     def parse_feed(self, raw_entries):
         return feedparser.parse(raw_entries)
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching entries on the fetch process.
-
-        :returns: this backend does not support entries cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -140,7 +140,7 @@ class RSS(Backend):
         This backend only generates one type of item which is
         'entry'.
         """
-        return 'entry'
+        return CATEGORY_ENTRY
 
     def _init_client(self, from_archive=False):
         """Init client"""
@@ -180,7 +180,7 @@ class RSSCommand(BackendCommand):
     def setup_cmd_parser():
         """Returns the RSS argument parser."""
 
-        parser = BackendCommandArgumentParser(cache=True)
+        parser = BackendCommandArgumentParser(archive=True)
 
         # Required arguments
         parser.parser.add_argument('url',

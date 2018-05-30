@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -24,7 +24,6 @@ import datetime
 import json
 import os
 import shutil
-import sys
 import unittest
 
 import bs4
@@ -32,9 +31,6 @@ import httpretty
 import pkg_resources
 import requests
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -43,7 +39,7 @@ from perceval.backends.core.askbot import (Askbot,
                                            AskbotParser,
                                            AskbotCommand)
 from perceval.utils import DEFAULT_DATETIME
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 ASKBOT_URL = 'http://example.com'
 ASKBOT_QUESTIONS_API_URL = ASKBOT_URL + '/api/v1/questions'
@@ -174,7 +170,7 @@ class TestAskbotParser(unittest.TestCase):
         container = question[0].select("div.post-update-info")
         created = container[0]
         author = AskbotParser.parse_user_info(created)
-        self.assertEqual(author, "This post is a wiki")
+        self.assertEqual(author, {})
 
         # Test the user_info from an item with country and website
         page = read_file('data/askbot/html_country_and_website.html')
@@ -477,6 +473,7 @@ class TestAskbotBackend(unittest.TestCase):
         json_comments = json.loads(comments)
 
         self.assertEqual(len(questions[0]['data']['answers']), len(questions[0]['data']['answer_ids']))
+        self.assertTrue(questions[0]['data']['answers'][0]['accepted'])
         self.assertEqual(questions[0]['tag'], 'http://example.com')
         self.assertEqual(questions[0]['uuid'], '3fb5f945a0dd223c60218a98ad35bad6043f9f5f')
         self.assertEqual(questions[0]['updated_on'], 1408116902.0)
@@ -485,6 +482,7 @@ class TestAskbotBackend(unittest.TestCase):
         self.assertEqual(questions[0]['data']['comments'][0], json_comments[0])
         self.assertEqual(len(questions[0]['data']['comments']), len(json_comments))
         self.assertEqual(len(questions[1]['data']['answers']), len(questions[1]['data']['answer_ids']))
+        self.assertFalse(questions[1]['data']['answers'][0]['accepted'])
         self.assertEqual(questions[1]['tag'], 'http://example.com')
         self.assertEqual(questions[1]['uuid'], 'ecc1320265e400edb28700cc3d02efc6d76410be')
         self.assertEqual(questions[1]['updated_on'], 1349928216.0)
@@ -542,11 +540,6 @@ class TestAskbotBackend(unittest.TestCase):
 
         self.assertEqual(Askbot.has_resuming(), True)
 
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called."""
-
-        self.assertEqual(Askbot.has_caching(), False)
-
     def test_has_archiving(self):
         """Test if it returns True when has_resuming is called"""
 
@@ -558,7 +551,8 @@ class TestAskbotBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = Askbot(ASKBOT_URL, archive=self.archive)
+        self.backend_write_archive = Askbot(ASKBOT_URL, archive=self.archive)
+        self.backend_read_archive = Askbot(ASKBOT_URL, archive=self.archive)
 
     def tearDown(self):
         shutil.rmtree(self.test_path)
@@ -653,12 +647,14 @@ class TestAskbotCommand(unittest.TestCase):
 
         args = ['--tag', 'test',
                 '--from-date', '1970-01-01',
+                '--no-archive',
                 ASKBOT_URL]
 
         parsed_args = parser.parse(*args)
         self.assertEqual(parsed_args.url, ASKBOT_URL)
         self.assertEqual(parsed_args.tag, 'test')
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
+        self.assertEqual(parsed_args.no_archive, True)
 
 
 if __name__ == "__main__":

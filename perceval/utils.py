@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DATETIME = datetime.datetime(1970, 1, 1, 0, 0, 0,
                                      tzinfo=dateutil.tz.tzutc())
+DEFAULT_LAST_DATETIME = datetime.datetime(2100, 1, 1, 0, 0, 0,
+                                          tzinfo=dateutil.tz.tzutc())
 
 
 def check_compressed_file_type(filepath):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -21,19 +21,16 @@
 #     Quan Zhou <quan@bitergia.com>
 #
 
+import copy
 import datetime
 import httpretty
 import json
 import os
 import pkg_resources
-import sys
 import time
 import unittest
 import urllib
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -41,7 +38,7 @@ from perceval.utils import DEFAULT_DATETIME
 from perceval.backends.core.stackexchange import (StackExchange,
                                                   StackExchangeCommand,
                                                   StackExchangeClient)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 
 VERSION_API = '/2.2'
@@ -84,11 +81,6 @@ class TestStackExchangeBackend(unittest.TestCase):
         self.assertEqual(stack.site, 'stackoverflow')
         self.assertEqual(stack.origin, 'stackoverflow')
         self.assertEqual(stack.tag, 'stackoverflow')
-
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(StackExchange.has_caching(), False)
 
     def test_has_archiving(self):
         """Test if it returns True when has_archiving is called"""
@@ -172,9 +164,12 @@ class TestStackExchangeBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = StackExchange(site="stackoverflow", tagged="python",
-                                     api_token="aaa", max_questions=1,
-                                     archive=self.archive)
+        self.backend_write_archive = StackExchange(site="stackoverflow.com", tagged="python",
+                                                   api_token="aaa", max_questions=1,
+                                                   archive=self.archive)
+        self.backend_read_archive = StackExchange(site="stackoverflow.com", tagged="python",
+                                                  api_token="bbb", max_questions=1,
+                                                  archive=self.archive)
 
     @httpretty.activate
     def test_fetch_from_archive(self):
@@ -421,6 +416,27 @@ class TestStackExchangeClient(unittest.TestCase):
         diff = after - before
         self.assertGreaterEqual(diff, 0.2)
 
+    def test_sanitize_for_archive(self):
+        """Test whether the sanitize method works properly"""
+
+        url = "http://example.com"
+        headers = "headers-information"
+        payload = {'order': 'desc',
+                   'site': 'stackoverflow',
+                   'sort': 'activity',
+                   'pagesize': 1,
+                   'key': 'aaa',
+                   'filter': 'Bf*y*ByQD_upZqozgU6lXL_62USGOoV3)MFNgiHqHpmO_Y-jHR',
+                   'page': 1,
+                   'tagged': 'python'}
+
+        s_url, s_headers, s_payload = StackExchangeClient.sanitize_for_archive(url, headers, copy.deepcopy(payload))
+        payload.pop("key")
+
+        self.assertEqual(url, s_url)
+        self.assertEqual(headers, s_headers)
+        self.assertEqual(payload, s_payload)
+
 
 class TestStackExchangeCommand(unittest.TestCase):
     """StackExchangeCommand unit tests"""
@@ -441,7 +457,7 @@ class TestStackExchangeCommand(unittest.TestCase):
                 '--api-token', 'aaa',
                 '--max-questions', '1',
                 '--tag', 'test',
-                '--no-cache',
+                '--no-archive',
                 '--from-date', '1970-01-01']
 
         parsed_args = parser.parse(*args)
@@ -450,7 +466,7 @@ class TestStackExchangeCommand(unittest.TestCase):
         self.assertEqual(parsed_args.api_token, 'aaa')
         self.assertEqual(parsed_args.max_questions, 1)
         self.assertEqual(parsed_args.tag, 'test')
-        self.assertEqual(parsed_args.no_cache, True)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
 
 

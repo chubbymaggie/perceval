@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,7 +23,6 @@
 import datetime
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -32,9 +31,6 @@ import dateutil.tz
 import httpretty
 import pkg_resources
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -180,11 +176,6 @@ class TestHyperKittyBackend(unittest.TestCase):
         self.assertEqual(backend.origin, 'http://example.com/')
         self.assertEqual(backend.tag, 'http://example.com/')
 
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(HyperKitty.has_caching(), False)
-
     def test_has_archiving(self):
         """Test if it returns False when has_archiving is called"""
 
@@ -309,7 +300,6 @@ class TestHyperKittyCommand(unittest.TestCase):
         self.assertEqual(cmd.parsed_args.url, 'http://example.com/archives/list/test@example.com/')
         self.assertEqual(cmd.parsed_args.mboxes_path, '/tmp/perceval/')
         self.assertEqual(cmd.parsed_args.tag, 'test')
-        self.assertIsInstance(cmd.backend, HyperKitty)
 
     def test_setup_cmd_parser(self):
         """Test if it parser object is correctly initialized"""

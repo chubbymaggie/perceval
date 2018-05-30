@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -31,15 +31,15 @@ from ...backend import (Backend,
                         BackendCommandArgumentParser)
 from ...client import HttpClient
 
-
-logger = logging.getLogger(__name__)
-
+CATEGORY_DOCKERHUB_DATA = "dockerhub-data"
 
 DOCKERHUB_URL = "https://hub.docker.com/"
 DOCKERHUB_API_URL = urijoin(DOCKERHUB_URL, 'v2')
 
 DOCKER_OWNER = 'library'
 DOCKER_SHORTCUT_OWNER = '_'
+
+logger = logging.getLogger(__name__)
 
 
 class DockerHub(Backend):
@@ -56,40 +56,47 @@ class DockerHub(Backend):
     :param owner: DockerHub owner
     :param repository: DockerHub repository owned by `owner`
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: collect dockerhub data already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.3.0'
+    version = '0.4.2'
 
-    def __init__(self, owner, repository,
-                 tag=None, cache=None, archive=None):
+    CATEGORIES = [CATEGORY_DOCKERHUB_DATA]
+
+    def __init__(self, owner, repository, tag=None, archive=None):
         if owner == DOCKER_SHORTCUT_OWNER:
             owner = DOCKER_OWNER
 
         origin = urijoin(DOCKERHUB_URL, owner, repository)
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.owner = owner
         self.repository = repository
         self.client = None
 
-    def fetch(self):
+    def fetch(self, category=CATEGORY_DOCKERHUB_DATA):
         """Fetch data from a Docker Hub repository.
 
         The method retrieves, from a repository stored in Docker Hub,
         its data which includes number of pulls, stars, description,
         among other data.
 
+        :param category: the category of items to fetch
+
         :returns: a generator of data
         """
         kwargs = {}
-        items = super().fetch("dockerhub-data", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch items from a Docker Hub repository"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the Dockher Hub items
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         logger.info("Fetching data from '%s' repository of '%s' owner",
                     self.repository, self.owner)
 
@@ -101,14 +108,6 @@ class DockerHub(Backend):
         yield data
 
         logger.info("Fetch process completed")
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -153,7 +152,7 @@ class DockerHub(Backend):
         This backend only generates one type of item which is
         'dockerhub-data'.
         """
-        return 'dockerhub-data'
+        return CATEGORY_DOCKERHUB_DATA
 
     @staticmethod
     def parse_json(raw_json):
@@ -210,7 +209,7 @@ class DockerHubCommand(BackendCommand):
     def setup_cmd_parser():
         """Returns the DockerHub argument parser."""
 
-        parser = BackendCommandArgumentParser(cache=True)
+        parser = BackendCommandArgumentParser(archive=True)
 
         # Required arguments
         parser.parser.add_argument('owner',

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -25,15 +25,11 @@
 import datetime
 import os
 import shutil
-import sys
 import unittest
 
 import httpretty
 import pkg_resources
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -41,7 +37,7 @@ from perceval.utils import DEFAULT_DATETIME
 from perceval.backends.core.discourse import (Discourse,
                                               DiscourseCommand,
                                               DiscourseClient)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 DISCOURSE_SERVER_URL = 'http://example.com'
 DISCOURSE_TOPICS_URL = DISCOURSE_SERVER_URL + '/latest.json'
@@ -82,11 +78,6 @@ class TestDiscourseBackend(unittest.TestCase):
         self.assertEqual(discourse.url, DISCOURSE_SERVER_URL)
         self.assertEqual(discourse.origin, DISCOURSE_SERVER_URL)
         self.assertEqual(discourse.tag, DISCOURSE_SERVER_URL)
-
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(Discourse.has_caching(), False)
 
     def test_has_archiving(self):
         """Test if it returns True when has_archiving is called"""
@@ -431,7 +422,8 @@ class TestDiscourseBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = Discourse(DISCOURSE_SERVER_URL, archive=self.archive)
+        self.backend_write_archive = Discourse(DISCOURSE_SERVER_URL, api_token="aaaaa", archive=self.archive)
+        self.backend_read_archive = Discourse(DISCOURSE_SERVER_URL, archive=self.archive)
 
     def tearDown(self):
         shutil.rmtree(self.test_path)
@@ -776,6 +768,30 @@ class TestDiscourseClient(unittest.TestCase):
         self.assertRegex(req.path, '/posts/21.json')
         self.assertDictEqual(req.querystring, expected)
 
+    def test_sanitize_for_archive_no_api_key(self):
+        """Test whether the sanitize method works properly when the api_key does not exist"""
+
+        url = "http://example.com"
+        headers = "headers-information"
+        payload = "payload-information"
+
+        s_url, s_headers, s_payload = DiscourseClient.sanitize_for_archive(url, headers, payload)
+
+        self.assertEqual(url, s_url)
+        self.assertEqual(headers, s_headers)
+        self.assertEqual(payload, s_payload)
+
+    def test_sanitize_for_archive(self):
+        """Test whether the sanitize method works properly"""
+
+        url = "http://example.com"
+        headers = "headers-information"
+        payload = {'api_key': 'aaaa'}
+
+        url, headers, payload = DiscourseClient.sanitize_for_archive(None, None, payload)
+        with self.assertRaises(KeyError):
+            payload.pop("api_key")
+
 
 class TestDiscourseCommand(unittest.TestCase):
     """Tests for DiscourseCommand class"""
@@ -791,14 +807,14 @@ class TestDiscourseCommand(unittest.TestCase):
         parser = DiscourseCommand.setup_cmd_parser()
         self.assertIsInstance(parser, BackendCommandArgumentParser)
 
-        args = ['--tag', 'test', '--no-cache',
+        args = ['--tag', 'test', '--no-archive',
                 '--from-date', '1970-01-01',
                 DISCOURSE_SERVER_URL]
 
         parsed_args = parser.parse(*args)
         self.assertEqual(parsed_args.url, DISCOURSE_SERVER_URL)
         self.assertEqual(parsed_args.tag, 'test')
-        self.assertEqual(parsed_args.no_cache, True)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
 
 

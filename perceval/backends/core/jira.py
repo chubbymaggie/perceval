@@ -37,6 +37,7 @@ from ...backend import (Backend,
 from ...client import HttpClient
 from ...utils import DEFAULT_DATETIME
 
+CATEGORY_ISSUE = "issue"
 
 MAX_ISSUES = 100  # Maximum number of issues per query
 
@@ -94,18 +95,20 @@ class Jira(Backend):
     :param cert: SSL certificate path (PEM)
     :param max_issues: max number of issues per query
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: collect issues already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.9.0'
+    version = '0.11.4'
+
+    CATEGORIES = [CATEGORY_ISSUE]
 
     def __init__(self, url, project=None,
                  user=None, password=None,
-                 verify=None, cert=None,
-                 max_issues=None, tag=None, cache=None, archive=None):
+                 verify=True, cert=None,
+                 max_issues=MAX_ISSUES, tag=None,
+                 archive=None):
         origin = url
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.url = url
         self.project = project
         self.user = user
@@ -115,12 +118,13 @@ class Jira(Backend):
         self.max_issues = max_issues
         self.client = None
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_ISSUE, from_date=DEFAULT_DATETIME):
         """Fetch the issues from the site.
 
         The method retrieves, from a JIRA site, the
         issues updated since the given date.
 
+        :param category: the category of items to fetch
         :param from_date: retrieve issues updated from this date
 
         :returns: a generator of issues
@@ -131,13 +135,18 @@ class Jira(Backend):
         from_date = datetime_to_utc(from_date)
 
         kwargs = {'from_date': from_date}
-        items = super().fetch("issue", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch issues"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the issues
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
 
         logger.info("Looking for issues at site '%s', in project '%s' and updated from '%s'",
@@ -155,14 +164,6 @@ class Jira(Backend):
                 for k, v in mapping.items():
                     issue['fields'][k] = v
                 yield issue
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -210,7 +211,7 @@ class Jira(Backend):
         This backend only generates one type of item which is
         'issue'.
         """
-        return 'issue'
+        return CATEGORY_ISSUE
 
     @staticmethod
     def parse_issues(raw_page):
@@ -259,7 +260,7 @@ class JiraClient(HttpClient):
     VERSION_API = '2'
     RESOURCE = 'rest/api'
 
-    def __init__(self, url, project, user, password, verify, cert, max_issues,
+    def __init__(self, url, project, user, password, verify, cert, max_issues=MAX_ISSUES,
                  archive=None, from_archive=False):
         super().__init__(url, archive=archive, from_archive=from_archive)
         self.project = project
@@ -269,7 +270,8 @@ class JiraClient(HttpClient):
         self.cert = cert
         self.max_issues = max_issues
 
-        self.__init_session()
+        if not from_archive:
+            self.__init_session()
 
     def get_issues(self, from_date):
         """Retrieve all the issues from a given date.
@@ -370,7 +372,7 @@ class JiraCommand(BackendCommand):
 
         parser = BackendCommandArgumentParser(from_date=True,
                                               basic_auth=True,
-                                              cache=True)
+                                              archive=True)
 
         # JIRA options
         group = parser.parser.add_argument_group('JIRA arguments')

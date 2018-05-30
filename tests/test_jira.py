@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -25,16 +25,12 @@
 import json
 import os
 import unittest
-import sys
 
 import httpretty
 import pkg_resources
 
 from grimoirelab.toolkit.datetime import str_to_datetime
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -44,7 +40,7 @@ from perceval.backends.core.jira import (Jira,
                                          JiraCommand,
                                          filter_custom_fields,
                                          map_custom_field)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 
 JIRA_SERVER_URL = 'http://example.com'
@@ -159,11 +155,6 @@ class TestJiraBackend(unittest.TestCase):
         self.assertEqual(jira.origin, JIRA_SERVER_URL)
         self.assertEqual(jira.tag, JIRA_SERVER_URL)
 
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(Jira.has_caching(), False)
-
     def test_has_archiving(self):
         """Test if it returns True when has_archiving is called"""
 
@@ -211,12 +202,14 @@ class TestJiraBackend(unittest.TestCase):
             {
                 'expand': ['renderedFields,transitions,operations,changelog'],
                 'jql': ['updated > 0 order by updated asc'],
-                'startAt': ['0']
+                'startAt': ['0'],
+                'maxResults': ['100']
             },
             {
                 'expand': ['renderedFields,transitions,operations,changelog'],
                 'jql': ['updated > 0 order by updated asc'],
-                'startAt': ['2']
+                'startAt': ['2'],
+                'maxResults': ['100']
             }
         ]
 
@@ -328,12 +321,13 @@ class TestJiraBackend(unittest.TestCase):
 
         jira = Jira(JIRA_SERVER_URL)
 
-        issues = [issue for issue in jira.fetch(from_date)]
+        issues = [issue for issue in jira.fetch(from_date=from_date)]
 
         expected_req = {
             'expand': ['renderedFields,transitions,operations,changelog'],
             'jql': ['updated > 1420070400000 order by updated asc'],
-            'startAt': ['0']
+            'startAt': ['0'],
+            'maxResults': ['100']
         }
 
         self.assertEqual(len(issues), 1)
@@ -372,7 +366,8 @@ class TestJiraBackend(unittest.TestCase):
         expected_req = {
             'expand': ['renderedFields,transitions,operations,changelog'],
             'jql': ['updated > 0 order by updated asc'],
-            'startAt': ['0']
+            'startAt': ['0'],
+            'maxResults': ['100']
         }
 
         self.assertEqual(len(issues), 0)
@@ -388,7 +383,8 @@ class TestJiraBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = Jira(JIRA_SERVER_URL, archive=self.archive)
+        self.backend_write_archive = Jira(JIRA_SERVER_URL, user="test", password="test", archive=self.archive)
+        self.backend_read_archive = Jira(JIRA_SERVER_URL, archive=self.archive)
 
     @httpretty.activate
     def test_fetch_from_archive(self):
@@ -416,6 +412,9 @@ class TestJiraBackendArchive(TestCaseBackendArchive):
                                body=body, status=200)
 
         self._test_fetch_from_archive(from_date=None)
+
+        self.assertEqual(("test", "test"), self.backend_write_archive.client.session.auth)
+        self.assertIsNone(self.backend_read_archive.client.session.auth)
 
     @httpretty.activate
     def test_fetch_from_date_from_archive(self):
@@ -639,7 +638,7 @@ class TestJiraCommand(unittest.TestCase):
                 '--cert', 'aaaa',
                 '--max-issues', '1',
                 '--tag', 'test',
-                '--no-cache',
+                '--no-archive',
                 '--from-date', '1970-01-01',
                 JIRA_SERVER_URL]
 
@@ -651,7 +650,7 @@ class TestJiraCommand(unittest.TestCase):
         self.assertEqual(parsed_args.cert, 'aaaa')
         self.assertEqual(parsed_args.max_issues, 1)
         self.assertEqual(parsed_args.tag, 'test')
-        self.assertEqual(parsed_args.no_cache, True)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
         self.assertEqual(parsed_args.url, JIRA_SERVER_URL)
 

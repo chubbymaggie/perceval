@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,7 +23,6 @@
 import datetime
 import os
 import shutil
-import sys
 import unittest
 import unittest.mock
 
@@ -33,16 +32,13 @@ import pkg_resources
 
 from grimoirelab.toolkit.uris import urijoin
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
 from perceval.backends.core.dockerhub import (DockerHub,
                                               DockerHubClient,
                                               DockerHubCommand)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 DOCKERHUB_URL = "https://hub.docker.com/"
 DOCKERHUB_API_URL = DOCKERHUB_URL + 'v2'
@@ -103,11 +99,6 @@ class TestDockerHubBackend(unittest.TestCase):
         self.assertEqual(dockerhub.repository, 'redis')
         self.assertEqual(dockerhub.origin, expected_origin)
 
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(DockerHub.has_caching(), False)
-
     def test_has_archiving(self):
         """Test if it returns True when has_archiving is called"""
 
@@ -157,7 +148,8 @@ class TestDockerHubBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = DockerHub('grimoirelab', 'perceval', archive=self.archive)
+        self.backend_write_archive = DockerHub('grimoirelab', 'perceval', archive=self.archive)
+        self.backend_read_archive = DockerHub('grimoirelab', 'perceval', archive=self.archive)
 
     def tearDown(self):
         shutil.rmtree(self.test_path)
@@ -213,9 +205,10 @@ class TestDockerHubCommand(unittest.TestCase):
         parser = DockerHubCommand.setup_cmd_parser()
         self.assertIsInstance(parser, BackendCommandArgumentParser)
 
-        args = ['grimoirelab', 'perceval', '--no-cache']
+        args = ['grimoirelab', 'perceval', '--no-archive']
 
         parsed_args = parser.parse(*args)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.owner, 'grimoirelab')
         self.assertEqual(parsed_args.repository, 'perceval')
 

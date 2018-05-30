@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -32,6 +32,8 @@ from ...client import HttpClient
 from ...errors import BaseError
 from ...utils import DEFAULT_DATETIME
 
+CATEGORY_TASK = "task"
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,15 +48,16 @@ class Phabricator(Backend):
     :param url: URL of the server
     :param api_token: token needed to use the API
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: collect tasks already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.7.0'
+    version = '0.10.0'
 
-    def __init__(self, url, api_token, tag=None, cache=None, archive=None):
+    CATEGORIES = [CATEGORY_TASK]
+
+    def __init__(self, url, api_token, tag=None, archive=None):
         origin = url
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.url = url
         self.api_token = api_token
         self.client = None
@@ -62,13 +65,14 @@ class Phabricator(Backend):
         self._users = {}
         self._projects = {}
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_TASK, from_date=DEFAULT_DATETIME):
         """Fetch the tasks from the server.
 
         This method fetches the tasks stored on the server that were
         updated since the given date. The transactions data related
         to each task is also included within them.
 
+        :param category: the category of items to fetch
         :param from_date: obtain tasks updated since this date
 
         :returns: a generator of tasks
@@ -77,13 +81,18 @@ class Phabricator(Backend):
             from_date = DEFAULT_DATETIME
 
         kwargs = {'from_date': from_date}
-        items = super().fetch("task", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the tasks"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the tasks
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
 
         logger.info("Fetching tasks of '%s' from %s", self.url, str(from_date))
@@ -95,14 +104,6 @@ class Phabricator(Backend):
             ntasks += 1
 
         logger.info("Fetch process completed: %s tasks fetched", ntasks)
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -147,7 +148,7 @@ class Phabricator(Backend):
         This backend only generates one type of item which is
         'task'.
         """
-        return 'task'
+        return CATEGORY_TASK
 
     @staticmethod
     def parse_tasks(raw_json):
@@ -298,7 +299,105 @@ class Phabricator(Backend):
                 author = self.__get_or_fetch_user(author_id)
                 tt['authorData'] = author
 
+                if tt['transactionType'] == 'reassign':
+                    tt['newValue_data'] = self.__resolve_reassign_id(tt['newValue'])
+                    tt['oldValue_data'] = self.__resolve_reassign_id(tt['oldValue'])
+
+                if tt['transactionType'] == 'core:columns':
+                    tt['newValue'] = self.__resolve_board_ids(tt['newValue'])
+                    tt['oldValue'] = self.__resolve_board_ids(tt['oldValue'])
+
+                if tt['transactionType'] == 'core:subscribers':
+                    tt['newValue_data'] = self.__resolve_subsribers_ids(tt['newValue'])
+                    tt['oldValue_data'] = self.__resolve_subsribers_ids(tt['oldValue'])
+
+                if tt['transactionType'] in ['core:edit-policy', 'core:view-policy']:
+                    tt['newValue_data'] = self.__resolve_policy_id(tt['newValue'])
+                    tt['oldValue_data'] = self.__resolve_policy_id(tt['oldValue'])
+
+                if tt['transactionType'] == 'core:edge':
+                    tt['oldValue_data'] = self.__resolve_project_ids(tt['oldValue'])
+                    tt['newValue_data'] = self.__resolve_project_ids(tt['newValue'])
+
         return tasks_trans
+
+    def __resolve_reassign_id(self, value):
+        if not value:
+            return value
+
+        resolved = self.__get_or_fetch_user(value)
+        return resolved
+
+    def __resolve_policy_id(self, value):
+        if not value:
+            return value
+
+        if value.startswith('PHID-PROJ'):
+            resolved = self.__get_or_fetch_project(value)
+        else:
+            resolved = value
+
+        return resolved
+
+    def __resolve_board_ids(self, lst):
+        if not lst:
+            return lst
+
+        for e in lst:
+            e['boardPHID_data'] = self.__get_or_fetch_project(e['boardPHID'])
+
+        return lst
+
+    def __resolve_subsribers_ids(self, lst):
+        if not lst:
+            return lst
+
+        resolved_lst = []
+        for e in lst:
+            resolved = e
+            if not e:
+                continue
+            elif e.startswith('PHID-PROJ'):
+                resolved = self.__get_or_fetch_project(e)
+            elif e.startswith('PHID-USER'):
+                resolved = self.__get_or_fetch_user(e)
+
+            resolved_lst.append(resolved)
+
+        return resolved_lst
+
+    def __resolve_project_ids(self, obj):
+        if not obj:
+            return obj
+
+        if isinstance(obj, dict):
+            obj = self.__resolve_project_ids_from_dict(obj)
+        elif isinstance(obj, list):
+            obj = self.__resolve_project_ids_from_list(obj)
+
+        return obj
+
+    def __resolve_project_ids_from_dict(self, dct):
+        projects = []
+
+        for key in dct.keys():
+            content = dct.get(key)
+
+            if 'dst' in content and content['dst'] and content['dst'].startswith('PHID-PROJ'):
+                project_info = self.__get_or_fetch_project(content['dst'])
+                projects.append(project_info)
+
+        return projects
+
+    def __resolve_project_ids_from_list(self, lst):
+        projects = []
+
+        for e in lst:
+            if e.startswith('PHID-PROJ'):
+                project_info = self.__get_or_fetch_project(e)
+                projects.append(project_info)
+
+        return projects
 
     def __fetch_and_parse_users(self, *users_ids):
         logger.debug("Fetching and parsing users data")
@@ -330,7 +429,7 @@ class PhabricatorCommand(BackendCommand):
 
         parser = BackendCommandArgumentParser(from_date=True,
                                               token_auth=True,
-                                              cache=True)
+                                              archive=True)
 
         # Required arguments
         parser.parser.add_argument('url',
@@ -455,6 +554,24 @@ class ConduitClient(HttpClient):
 
         return response
 
+    @staticmethod
+    def sanitize_for_archive(url, headers, payload):
+        """Sanitize payload of a HTTP request by removing the token information
+        before storing/retrieving archived items
+
+        :param: url: HTTP url request
+        :param: headers: HTTP headers request
+        :param: payload: HTTP payload request
+
+        :returns url, headers and the sanitized payload
+        """
+        if '__conduit__' in payload['params']:
+            params = json.loads(payload['params'])
+            params.pop('__conduit__')
+            payload['params'] = json.dumps(params, sort_keys=True)
+
+        return url, headers, payload
+
     def _call(self, method, params):
         """Call a method.
 
@@ -470,7 +587,7 @@ class ConduitClient(HttpClient):
         params['__conduit__'] = {'token': self.api_token}
 
         data = {
-            'params': json.dumps(params),
+            'params': json.dumps(params, sort_keys=True),
             'output': 'json',
             '__conduit__': True
         }

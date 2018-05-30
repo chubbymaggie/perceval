@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,16 +23,12 @@
 import datetime
 import os
 import shutil
-import sys
 import unittest
 import urllib
 
 import httpretty
 import pkg_resources
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -40,7 +36,7 @@ from perceval.utils import DEFAULT_DATETIME
 from perceval.backends.core.confluence import (Confluence,
                                                ConfluenceClient,
                                                ConfluenceCommand)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 
 CONFLUENCE_URL = 'http://example.com'
@@ -146,11 +142,6 @@ class TestConfluenceBackend(unittest.TestCase):
         self.assertEqual(confluence.url, CONFLUENCE_URL)
         self.assertEqual(confluence.origin, CONFLUENCE_URL)
         self.assertEqual(confluence.tag, CONFLUENCE_URL)
-
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(Confluence.has_caching(), False)
 
     def test_has_archiving(self):
         """Test if it returns True when has_archiving is called"""
@@ -429,7 +420,8 @@ class TestConfluenceBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = Confluence(CONFLUENCE_URL, archive=self.archive)
+        self.backend_write_archive = Confluence(CONFLUENCE_URL, archive=self.archive)
+        self.backend_read_archive = Confluence(CONFLUENCE_URL, archive=self.archive)
 
     def tearDown(self):
         shutil.rmtree(self.test_path)
@@ -488,13 +480,13 @@ class TestConfluenceCommand(unittest.TestCase):
         self.assertIsInstance(parser, BackendCommandArgumentParser)
 
         args = ['http://example.com',
-                '--tag', 'test', '--no-cache',
+                '--tag', 'test', '--no-archive',
                 '--from-date', '1970-01-01']
 
         parsed_args = parser.parse(*args)
         self.assertEqual(parsed_args.url, 'http://example.com')
         self.assertEqual(parsed_args.tag, 'test')
-        self.assertEqual(parsed_args.no_cache, True)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
 
 

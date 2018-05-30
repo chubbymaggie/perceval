@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -21,33 +21,36 @@
 #
 
 import argparse
-import functools
 import hashlib
 import importlib
 import json
+import logging
+import os
 import pkgutil
 import sys
 
-from datetime import datetime as dt
-
 from grimoirelab.toolkit.introspect import find_signature_parameters
-from grimoirelab.toolkit.datetime import str_to_datetime
-
-from .archive import Archive
-from .cache import Cache, setup_cache
-from .errors import ArchiveError
+from grimoirelab.toolkit.datetime import (datetime_utcnow,
+                                          str_to_datetime)
+from .archive import Archive, ArchiveManager
+from .errors import ArchiveError, BackendError
 from ._version import __version__
+
+
+logger = logging.getLogger(__name__)
+
+ARCHIVES_DEFAULT_PATH = '~/.perceval/archives/'
 
 
 class Backend:
     """Abstract class for backends.
 
     Base class to fetch data from a repository. This repository
-    will be named as 'origin'. During the initialization, a `Cache`
-    object can be provided for caching raw data from the repositories.
+    will be named as 'origin'. During the initialization, an `Archive`
+    object can be provided for archiving raw data from the repositories.
 
-    Derivated classes have to implement `fetch`, `fetch_from_cache`,
-    `has_caching` and `has_resuming` methods. Otherwise, `NotImplementedError`
+    Derivated classes have to implement `fetch_items`, `has_archiving` and
+    `has_resuming` methods. Otherwise, `NotImplementedError`
     exception will be raised. Metadata decorator can be used together with
     fetch methods but requires the implementation of `metadata_id`,
     `metadata_updated_on` and `metadata_category` static methods.
@@ -62,19 +65,18 @@ class Backend:
 
     :param origin: identifier of the repository
     :param tag: tag items using this label
-    :param cache: object to caeche raw data
-    :param archive: archive object from where fetch the archived data
+    :param archive: archive to store/retrieve data
 
-    :raises ValueError: raised when `cache` is not an instance of
-        `Cache` class
+    :raises ValueError: raised when `archive` is not an instance of
+        `Archive` class
     """
-    version = '0.5.1'
+    version = '0.6.2'
 
-    def __init__(self, origin, tag=None, cache=None, archive=None):
+    CATEGORIES = []
+
+    def __init__(self, origin, tag=None, archive=None):
         self._origin = origin
         self.tag = tag if tag else origin
-        self.cache = cache or None
-        self.cache_queue = []
         self.archive = archive or None
 
     @property
@@ -82,31 +84,23 @@ class Backend:
         return self._origin
 
     @property
-    def cache(self):
-        return self._cache
-
-    @cache.setter
-    def cache(self, obj):
-        if obj and not isinstance(obj, Cache):
-            msg = "obj is not an instance of Cache. %s object given" \
-                % (str(type(obj)))
-            raise ValueError(msg)
-
-        self._cache = obj
-
-    @ property
     def archive(self):
         return self._archive
 
-    @ archive.setter
+    @archive.setter
     def archive(self, obj):
         if obj and not isinstance(obj, Archive):
-            msg = "obj is not an instance of Archive. %s object given" % (str(type(obj)))
+            msg = "obj is not an instance of Archive. %s object given" \
+                % (str(type(obj)))
             raise ValueError(msg)
 
         self._archive = obj
 
-    def fetch_items(self, **kwargs):
+    @property
+    def categories(self):
+        return self.CATEGORIES
+
+    def fetch_items(self, category, **kwargs):
         raise NotImplementedError
 
     def fetch(self, category, **kwargs):
@@ -120,13 +114,17 @@ class Backend:
 
         :returns: a generator of items
         """
+        if category not in self.categories:
+            cause = "%s category not valid for %s" % (category, self.__class__.__name__)
+            raise BackendError(cause=cause)
+
         if self.archive:
             self.archive.init_metadata(self.origin, self.__class__.__name__, self.version, category,
                                        kwargs)
 
         self.client = self._init_client()
 
-        for item in self.fetch_items(**kwargs):
+        for item in self.fetch_items(category, **kwargs):
             yield self.metadata(item)
 
     def fetch_from_archive(self):
@@ -143,9 +141,7 @@ class Backend:
 
         self.client = self._init_client(from_archive=True)
 
-        self.archive._load_metadata()
-
-        for item in self.fetch_items(**self.archive.backend_params):
+        for item in self.fetch_items(self.archive.category, **self.archive.backend_params):
             yield self.metadata(item)
 
     def metadata(self, item):
@@ -161,7 +157,7 @@ class Backend:
             'backend_name': self.__class__.__name__,
             'backend_version': self.version,
             'perceval_version': __version__,
-            'timestamp': dt.utcnow().timestamp(),
+            'timestamp': datetime_utcnow().timestamp(),
             'origin': self.origin,
             'uuid': uuid(self.origin, self.metadata_id(item)),
             'updated_on': self.metadata_updated_on(item),
@@ -173,7 +169,7 @@ class Backend:
         return item
 
     @classmethod
-    def has_caching(cls):
+    def has_archiving(cls):
         raise NotImplementedError
 
     @classmethod
@@ -192,20 +188,6 @@ class Backend:
     def metadata_category(item):
         raise NotImplementedError
 
-    def _purge_cache_queue(self):
-        self.cache_queue = []
-
-    def _flush_cache_queue(self):
-        if not self.cache:
-            return
-        self.cache.store(*self.cache_queue)
-        self._purge_cache_queue()
-
-    def _push_cache_queue(self, item):
-        if not self.cache:
-            return
-        self.cache_queue.append(item)
-
     def _init_client(self, from_archive=False):
         raise NotImplementedError
 
@@ -214,7 +196,7 @@ class BackendCommandArgumentParser:
     """Manage and parse backend command arguments.
 
     This class defines and parses a set of arguments common to
-    backends commands. Some parameters like cache or the different
+    backends commands. Some parameters like archive or the different
     types of authentication can be set during the initialization
     of the instance.
 
@@ -223,23 +205,25 @@ class BackendCommandArgumentParser:
     :param offset: set offset argument
     :param basic_auth: set basic authentication arguments
     :param token_auth: set token/key authentication arguments
-    :param cache: set caching arguments
+    :param archive: set archiving arguments
     :param aliases: define aliases for parsed arguments
 
     :raises AttributeArror: when both `from_date` and `offset` are set
         to `True`
     """
     def __init__(self, from_date=False, to_date=False, offset=False,
-                 basic_auth=False, token_auth=False,
-                 cache=False, aliases=None):
+                 basic_auth=False, token_auth=False, archive=False,
+                 aliases=None):
         self._from_date = from_date
         self._to_date = to_date
-        self._cache = cache
+        self._archive = archive
 
         self.aliases = aliases or {}
         self.parser = argparse.ArgumentParser()
 
         group = self.parser.add_argument_group('general arguments')
+        group.add_argument('--category', dest='category',
+                           help="type of the items to fetch")
         group.add_argument('--tag', dest='tag',
                            help="tag the items generated during the fetching process")
 
@@ -262,8 +246,8 @@ class BackendCommandArgumentParser:
             self._set_auth_arguments(basic_auth=basic_auth,
                                      token_auth=token_auth)
 
-        if cache:
-            self._set_cache_arguments()
+        if archive:
+            self._set_archive_arguments()
 
         self._set_output_arguments()
 
@@ -280,13 +264,21 @@ class BackendCommandArgumentParser:
         """
         parsed_args = self.parser.parse_args(args)
 
+        # Category was not set, remove it
+        if parsed_args.category is None:
+            delattr(parsed_args, 'category')
+
         if self._from_date:
             parsed_args.from_date = str_to_datetime(parsed_args.from_date)
         if self._to_date and parsed_args.to_date:
             parsed_args.to_date = str_to_datetime(parsed_args.to_date)
+        if self._archive and parsed_args.archived_since:
+            parsed_args.archived_since = str_to_datetime(parsed_args.archived_since)
 
-        if self._cache and parsed_args.fetch_cache and parsed_args.no_cache:
-            raise AttributeError("fetch-cache and no-cache arguments are not compatible")
+        if self._archive and parsed_args.fetch_archive and parsed_args.no_archive:
+            raise AttributeError("fetch-archive and no-archive arguments are not compatible")
+        if self._archive and parsed_args.fetch_archive and not parsed_args.category:
+            raise AttributeError("fetch-archive needs a category to work with")
 
         # Set aliases
         for alias, arg in self.aliases.items():
@@ -310,18 +302,18 @@ class BackendCommandArgumentParser:
             group.add_argument('-t', '--api-token', dest='api_token',
                                help="backend authentication token / API key")
 
-    def _set_cache_arguments(self):
-        """Activate cache arguments parsing"""
+    def _set_archive_arguments(self):
+        """Activate archive arguments parsing"""
 
-        group = self.parser.add_argument_group('cache arguments')
-        group.add_argument('--cache-path', dest='cache_path', default=None,
-                           help="directory path to the cache")
-        group.add_argument('--clean-cache', dest='clean_cache', action='store_true',
-                           help="clean the cache before the fetching process")
-        group.add_argument('--no-cache', dest='no_cache', action='store_true',
-                           help="do not store data in the cache")
-        group.add_argument('--fetch-cache', dest='fetch_cache', action='store_true',
-                           help="fetch data from the cache")
+        group = self.parser.add_argument_group('archive arguments')
+        group.add_argument('--archive-path', dest='archive_path', default=None,
+                           help="directory path to the archives")
+        group.add_argument('--no-archive', dest='no_archive', action='store_true',
+                           help="do not archive data")
+        group.add_argument('--fetch-archive', dest='fetch_archive', action='store_true',
+                           help="fetch data from the archives")
+        group.add_argument('--archived-since', dest='archived_since', default='1970-01-01',
+                           help="retrieve items archived since the given date")
 
     def _set_output_arguments(self):
         """Activate output arguments parsing"""
@@ -353,13 +345,10 @@ class BackendCommand:
         parser = self.setup_cmd_parser()
         self.parsed_args = parser.parse(*args)
 
+        self.archive_manager = None
+
         self._pre_init()
-
-        parsed_args = vars(self.parsed_args)
-        kw = find_signature_parameters(self.BACKEND.__init__, parsed_args)
-        self.backend = self.BACKEND(**kw)
-        self.backend.cache = self._initialize_cache()
-
+        self._initialize_archive()
         self._post_init()
 
         self.outfile = self.parsed_args.outfile
@@ -371,18 +360,21 @@ class BackendCommand:
         origin. Items are converted to JSON objects and written to the
         defined output.
 
-        If `fetch-cache` parameter was given as an argument during
+        If `fetch-archive` parameter was given as an argument during
         the inizialization of the instance, the items will be retrieved
-        from the cache.
+        using the archive manager.
         """
-        if self.backend.cache and self.parsed_args.fetch_cache:
-            fetch = self.backend.fetch_from_cache
-        else:
-            fetch = self.backend.fetch
+        backend_args = vars(self.parsed_args)
 
-        parsed_args = vars(self.parsed_args)
-        kw = find_signature_parameters(fetch, parsed_args)
-        items = fetch(**kw)
+        if self.archive_manager and self.parsed_args.fetch_archive:
+
+            items = fetch_from_archive(self.BACKEND, backend_args,
+                                       self.archive_manager,
+                                       self.parsed_args.category,
+                                       self.parsed_args.archived_since)
+        else:
+            items = fetch(self.BACKEND, backend_args,
+                          manager=self.archive_manager)
 
         try:
             for item in items:
@@ -392,8 +384,6 @@ class BackendCommand:
         except IOError as e:
             raise RuntimeError(str(e))
         except Exception as e:
-            if self.backend.cache:
-                self.backend.cache.recover()
             raise RuntimeError(str(e))
 
     def _pre_init(self):
@@ -404,52 +394,26 @@ class BackendCommand:
         """Override to execute after backend is initialized."""
         pass
 
-    def _initialize_cache(self):
-        """Initialize cache based on the parsed parameters"""
+    def _initialize_archive(self):
+        """Initialize archive based on the parsed parameters"""
 
-        if 'cache_path' not in self.parsed_args:
-            return None
+        if 'archive_path' not in self.parsed_args:
+            manager = None
+        elif self.parsed_args.no_archive:
+            manager = None
+        else:
+            if not self.parsed_args.archive_path:
+                archive_path = os.path.expanduser(ARCHIVES_DEFAULT_PATH)
+            else:
+                archive_path = self.parsed_args.archive_path
 
-        if self.parsed_args.no_cache:
-            return None
+            manager = ArchiveManager(archive_path)
 
-        return setup_cache(self.backend.origin,
-                           cache_path=self.parsed_args.cache_path,
-                           clean_cache=self.parsed_args.clean_cache)
+        self.archive_manager = manager
 
     @staticmethod
     def setup_cmd_parser():
         raise NotImplementedError
-
-
-def metadata(func):
-    """Add metadata to an item.
-
-    Decorator that adds metadata to a given item such as how and
-    when it was fetched. The contents from the original item will
-    be stored under the 'data' keyword.
-
-    Take into account that this decorator can only be called from a
-    'Backend' class due it needs access to some of the attributes
-    and methods of this class.
-    """
-    @functools.wraps(func)
-    def decorator(self, *args, **kwargs):
-        for data in func(self, *args, **kwargs):
-            item = {
-                'backend_name': self.__class__.__name__,
-                'backend_version': self.version,
-                'perceval_version': __version__,
-                'timestamp': dt.utcnow().timestamp(),
-                'origin': self.origin,
-                'uuid': uuid(self.origin, self.metadata_id(data)),
-                'updated_on': self.metadata_updated_on(data),
-                'category': self.metadata_category(data),
-                'tag': self.tag,
-                'data': data,
-            }
-            yield item
-    return decorator
 
 
 def uuid(*args):
@@ -481,6 +445,82 @@ def uuid(*args):
     uuid_sha1 = sha1.hexdigest()
 
     return uuid_sha1
+
+
+def fetch(backend_class, backend_args, manager=None):
+    """Fetch items using the given backend.
+
+    Generator to get items using the given backend class. When
+    an archive manager is given, this function will store
+    the fetched items in an `Archive`. If an exception is raised,
+    this archive will be removed to avoid corrupted archives.
+
+    The parameters needed to initialize the `backend` class and
+    get the items are given using `backend_args` dict parameter.
+
+    :param backend_class: backend class to fetch items
+    :param backend_args: dict of arguments needed to fetch the items
+    :param manager: archive manager needed to store the items
+
+    :returns: a generator of items
+    """
+    init_args = find_signature_parameters(backend_class.__init__,
+                                          backend_args)
+    archive = manager.create_archive() if manager else None
+    init_args['archive'] = archive
+
+    backend = backend_class(**init_args)
+    fetch_args = find_signature_parameters(backend.fetch,
+                                           backend_args)
+    items = backend.fetch(**fetch_args)
+
+    try:
+        for item in items:
+            yield item
+    except Exception as e:
+        if manager:
+            archive_path = archive.archive_path
+            manager.remove_archive(archive_path)
+        raise e
+
+
+def fetch_from_archive(backend_class, backend_args, manager,
+                       category, archived_after):
+    """Fetch items from an archive manager.
+
+    Generator to get the items of a category (previously fetched
+    by the given backend class) from an archive manager. Only those
+    items archived after the given date will be returned.
+
+    The parameters needed to initialize `backend` and get the
+    items are given using `backend_args` dict parameter.
+
+    :param backend_class: backend class to retrive items
+    :param backend_args: dict of arguments needed to retrieve the items
+    :param manager: archive manager where the items will be retrieved
+    :param category: category of the items to retrieve
+    :param archived_after: return items archived after this date
+
+    :returns: a generator of archived items
+    """
+    init_args = find_signature_parameters(backend_class.__init__,
+                                          backend_args)
+    backend = backend_class(**init_args)
+
+    filepaths = manager.search(backend.origin,
+                               backend.__class__.__name__,
+                               category,
+                               archived_after)
+
+    for filepath in filepaths:
+        backend.archive = Archive(filepath)
+        items = backend.fetch_from_archive()
+
+        try:
+            for item in items:
+                yield item
+        except ArchiveError as e:
+            logger.warning("Ignoring %s archive due to: %s", filepath, str(e))
 
 
 def find_backends(top_package):

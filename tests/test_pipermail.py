@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -24,15 +24,12 @@ import datetime
 import httpretty
 import os
 import pkg_resources
+import requests
 import shutil
-import sys
 import tempfile
 import unittest
 import unittest.mock
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -50,6 +47,13 @@ def read_file(filename, mode='r'):
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), filename), mode) as f:
         content = f.read()
     return content
+
+
+class PipermailListMocked(PipermailList):
+
+    @staticmethod
+    def _write_archive(r, filepath):
+        raise OSError
 
 
 class TestPipermailList(unittest.TestCase):
@@ -70,6 +74,15 @@ class TestPipermailList(unittest.TestCase):
         self.assertEqual(pmls.uri, PIPERMAIL_URL)
         self.assertEqual(pmls.dirpath, self.tmp_path)
         self.assertEqual(pmls.url, PIPERMAIL_URL)
+        self.assertTrue(pmls.verify)
+
+        pmls = PipermailList(PIPERMAIL_URL, self.tmp_path, verify=False)
+
+        self.assertIsInstance(pmls, MailingList)
+        self.assertEqual(pmls.uri, PIPERMAIL_URL)
+        self.assertEqual(pmls.dirpath, self.tmp_path)
+        self.assertEqual(pmls.url, PIPERMAIL_URL)
+        self.assertFalse(pmls.verify)
 
     @httpretty.activate
     def test_fetch(self):
@@ -109,6 +122,98 @@ class TestPipermailList(unittest.TestCase):
         self.assertEqual(mboxes[0].filepath, os.path.join(self.tmp_path, '2015-November.txt.gz'))
         self.assertEqual(mboxes[1].filepath, os.path.join(self.tmp_path, '2016-March.txt'))
         self.assertEqual(mboxes[2].filepath, os.path.join(self.tmp_path, '2016-April.txt'))
+
+    @httpretty.activate
+    def test_fetch_http_403_error(self):
+        """Test whether 403 HTTP errors are properly handled"""
+
+        pipermail_index = read_file('data/pipermail/pipermail_index.html')
+        mbox_nov = read_file('data/pipermail/pipermail_2015_november.mbox')
+        mbox_march = read_file('data/pipermail/pipermail_2016_march.mbox')
+        mbox_april = read_file('data/pipermail/pipermail_2016_april.mbox')
+
+        httpretty.register_uri(httpretty.GET,
+                               PIPERMAIL_URL,
+                               body=pipermail_index)
+        httpretty.register_uri(httpretty.GET,
+                               PIPERMAIL_URL + '2015-November.txt.gz',
+                               body=mbox_nov)
+        httpretty.register_uri(httpretty.GET,
+                               PIPERMAIL_URL + '2016-March.txt',
+                               body=mbox_march)
+        httpretty.register_uri(httpretty.GET,
+                               PIPERMAIL_URL + '2016-April.txt',
+                               body=mbox_april,
+                               status=403)
+
+        pmls = PipermailList('http://example.com/', self.tmp_path)
+        links = pmls.fetch()
+
+        self.assertEqual(len(links), 2)
+
+    @httpretty.activate
+    def test_fetch_os_error(self):
+        """Test whether OS errors are properly handled"""
+
+        pipermail_index = read_file('data/pipermail/pipermail_index.html')
+        mbox_nov = read_file('data/pipermail/pipermail_2015_november.mbox')
+        mbox_march = read_file('data/pipermail/pipermail_2016_march.mbox')
+        mbox_april = read_file('data/pipermail/pipermail_2016_april.mbox')
+
+        httpretty.register_uri(httpretty.GET,
+                               PIPERMAIL_URL,
+                               body=pipermail_index)
+        httpretty.register_uri(httpretty.GET,
+                               PIPERMAIL_URL + '2015-November.txt.gz',
+                               body=mbox_nov)
+        httpretty.register_uri(httpretty.GET,
+                               PIPERMAIL_URL + '2016-March.txt',
+                               body=mbox_march)
+        httpretty.register_uri(httpretty.GET,
+                               PIPERMAIL_URL + '2016-April.txt',
+                               body=mbox_april)
+
+        pmls = PipermailListMocked('http://example.com/', self.tmp_path)
+        links = pmls.fetch()
+
+        self.assertEqual(len(links), 0)
+
+    @httpretty.activate
+    def test_fetch_http_errors(self):
+        """Test whether an exception is thrown when the HTTP error is not 403"""
+
+        pipermail_index = read_file('data/pipermail/pipermail_index.html')
+        mbox_april = read_file('data/pipermail/pipermail_2016_april.mbox')
+
+        httpretty.register_uri(httpretty.GET,
+                               PIPERMAIL_URL,
+                               body=pipermail_index)
+        httpretty.register_uri(httpretty.GET,
+                               PIPERMAIL_URL + '2016-April.txt',
+                               body=mbox_april,
+                               status=404)
+
+        pmls = PipermailList('http://example.com/', self.tmp_path)
+
+        with self.assertRaises(requests.exceptions.HTTPError):
+            links = pmls.fetch()
+
+    @httpretty.activate
+    def test_fetch_no_existing_dir(self):
+        """Test whether the dir_path where to store the archives is created if it doesn't exist"""
+
+        pipermail_index = read_file('data/pipermail/pipermail_index_empty.html')
+        httpretty.register_uri(httpretty.GET,
+                               PIPERMAIL_URL,
+                               body=pipermail_index)
+
+        # delete the dir path
+        os.removedirs(self.tmp_path)
+
+        self.assertFalse(os.path.exists(self.tmp_path))
+        pmls = PipermailList('http://example.com/', self.tmp_path)
+        _ = pmls.fetch()
+        self.assertTrue(os.path.exists(self.tmp_path))
 
     @httpretty.activate
     def test_fetch_empty(self):
@@ -201,6 +306,7 @@ class TestPipermailBackend(unittest.TestCase):
         self.assertEqual(backend.dirpath, self.tmp_path)
         self.assertEqual(backend.origin, 'http://example.com/')
         self.assertEqual(backend.tag, 'test')
+        self.assertTrue(backend.verify)
 
         # When tag is empty or None it will be set to
         # the value in uri
@@ -212,10 +318,10 @@ class TestPipermailBackend(unittest.TestCase):
         self.assertEqual(backend.origin, 'http://example.com/')
         self.assertEqual(backend.tag, 'http://example.com/')
 
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(Pipermail.has_caching(), False)
+        backend = Pipermail('http://example.com/', self.tmp_path, verify=True, tag='')
+        self.assertEqual(backend.origin, 'http://example.com/')
+        self.assertEqual(backend.tag, 'http://example.com/')
+        self.assertTrue(backend.verify)
 
     def test_has_archiving(self):
         """Test if it returns False when has_archiving is called"""
@@ -442,6 +548,14 @@ class TestPipermailCommand(unittest.TestCase):
         cmd = PipermailCommand(*args)
         self.assertEqual(cmd.parsed_args.dirpath, '/tmp/perceval/')
 
+        args = ['http://example.com/',
+                '--mboxes-path', '/tmp/perceval/',
+                '--verify', False]
+
+        cmd = PipermailCommand(*args)
+        self.assertEqual(cmd.parsed_args.dirpath, '/tmp/perceval/')
+        self.assertFalse(cmd.parsed_args.verify)
+
     def test_parsing_on_init(self):
         """Test if the class is initialized"""
 
@@ -453,7 +567,6 @@ class TestPipermailCommand(unittest.TestCase):
         self.assertEqual(cmd.parsed_args.url, 'http://example.com/')
         self.assertEqual(cmd.parsed_args.mboxes_path, '/tmp/perceval/')
         self.assertEqual(cmd.parsed_args.tag, 'test')
-        self.assertIsInstance(cmd.backend, Pipermail)
 
     def test_setup_cmd_parser(self):
         """Test if it parser object is correctly initialized"""
@@ -464,13 +577,15 @@ class TestPipermailCommand(unittest.TestCase):
         args = ['http://example.com/',
                 '--mboxes-path', '/tmp/perceval/',
                 '--tag', 'test',
-                '--from-date', '1970-01-01']
+                '--from-date', '1970-01-01',
+                '--verify', False]
 
         parsed_args = parser.parse(*args)
         self.assertEqual(parsed_args.url, 'http://example.com/')
         self.assertEqual(parsed_args.mboxes_path, '/tmp/perceval/')
         self.assertEqual(parsed_args.tag, 'test')
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
+        self.assertFalse(parsed_args.verify)
 
 
 if __name__ == "__main__":

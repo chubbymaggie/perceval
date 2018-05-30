@@ -35,6 +35,8 @@ from ...client import HttpClient
 from ...utils import DEFAULT_DATETIME
 
 
+CATEGORY_TOPIC = "topic"
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,25 +50,27 @@ class Discourse(Backend):
     :param url: Discourse URL
     :param api_token: Discourse API access token
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: collect topics already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.7.0'
+    version = '0.9.3'
 
-    def __init__(self, url, api_token=None, tag=None, cache=None, archive=None):
+    CATEGORIES = [CATEGORY_TOPIC]
+
+    def __init__(self, url, api_token=None, tag=None, archive=None):
         origin = url
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.url = url
         self.api_token = api_token
         self.client = None
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_TOPIC, from_date=DEFAULT_DATETIME):
         """Fetch the topics from the Discurse board.
 
         The method retrieves, from a Discourse board the topics
         updated since the given date.
 
+        :param category: the category of items to fetch
         :param from_date: obtain topics updated since this date
 
         :returns: a generator of topics
@@ -77,12 +81,18 @@ class Discourse(Backend):
         from_date = datetime_to_utc(from_date)
 
         kwargs = {'from_date': from_date}
-        items = super().fetch("topic", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the topics"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the topics
+
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
 
         from_date = kwargs['from_date']
 
@@ -100,14 +110,6 @@ class Discourse(Backend):
 
         logger.info("Fetch process completed: %s topics fetched",
                     ntopics)
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -155,7 +157,7 @@ class Discourse(Backend):
         This backend only generates one type of item which is
         'topic'.
         """
-        return 'topic'
+        return CATEGORY_TOPIC
 
     def _init_client(self, from_archive=False):
         """Init client"""
@@ -333,6 +335,22 @@ class DiscourseClient(HttpClient):
 
         return response
 
+    @staticmethod
+    def sanitize_for_archive(url, headers, payload):
+        """Sanitize payload of a HTTP request by removing the token information
+        before storing/retrieving archived items
+
+        :param: url: HTTP url request
+        :param: headers: HTTP headers request
+        :param: payload: HTTP payload request
+
+        :returns url, headers and the sanitized payload
+        """
+        if DiscourseClient.PKEY in payload:
+            payload.pop(DiscourseClient.PKEY)
+
+        return url, headers, payload
+
     def _call(self, res, res_id, params):
         """Run an API command.
 
@@ -366,7 +384,7 @@ class DiscourseCommand(BackendCommand):
 
         parser = BackendCommandArgumentParser(from_date=True,
                                               token_auth=True,
-                                              cache=True)
+                                              archive=True)
 
         # Required arguments
         parser.parser.add_argument('url',

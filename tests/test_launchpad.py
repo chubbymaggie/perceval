@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -27,12 +27,8 @@ import json
 import os
 import pkg_resources
 import requests
-import sys
 import unittest
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -40,7 +36,7 @@ from perceval.backends.core.launchpad import (Launchpad,
                                               LaunchpadClient,
                                               LaunchpadCommand)
 from perceval.utils import DEFAULT_DATETIME
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 
 LAUNCHPAD_API_URL = "https://api.launchpad.net/1.0"
@@ -87,11 +83,6 @@ class TestLaunchpadBackend(unittest.TestCase):
         self.assertEqual(launchpad.distribution, 'mydistribution')
         self.assertEqual(launchpad.origin, 'https://launchpad.net/mydistribution')
         self.assertEqual(launchpad.tag, 'https://launchpad.net/mydistribution')
-
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(Launchpad.has_caching(), False)
 
     def test_has_archiving(self):
         """Test if it returns False when has_archiving is called"""
@@ -416,8 +407,10 @@ class TestLaunchpadBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = Launchpad('mydistribution', package="mypackage",
-                                 items_per_page=2, archive=self.archive)
+        self.backend_write_archive = Launchpad('mydistribution', package="mypackage",
+                                               items_per_page=2, archive=self.archive)
+        self.backend_read_archive = Launchpad('mydistribution', package="mypackage",
+                                              items_per_page=2, archive=self.archive)
 
     @httpretty.activate
     def test_fetch_from_archive(self):
@@ -628,7 +621,9 @@ class TestLaunchpadBackendArchive(TestCaseBackendArchive):
                                body=empty_issues,
                                status=200)
 
-        self.backend = Launchpad('mydistribution', items_per_page=2, archive=self.archive)
+        self.backend_write_archive = Launchpad('mydistribution', items_per_page=2, archive=self.archive)
+        self.backend_read_archive = Launchpad('mydistribution', items_per_page=2, archive=self.archive)
+
         self._test_fetch_from_archive()
 
     @httpretty.activate
@@ -811,13 +806,23 @@ class TestLaunchpadClient(unittest.TestCase):
     def test_http_wrong_status_issue_collection(self):
         """Test if an empty collection is returned when the http status is not 200"""
 
+        httpretty.register_uri(httpretty.GET,
+                               LAUNCHPAD_API_URL + "/bugs/100/attachments",
+                               body="",
+                               status=404)
+
         client = LaunchpadClient("mydistribution", package="mypackage")
         with self.assertRaises(requests.exceptions.HTTPError):
             _ = next(client.issue_collection("100", "attachments"))
 
     @httpretty.activate
     def test_http_wrong_status_user(self):
-        """Test if an empty user is returned when the http status is not 200"""
+        """Test if an empty user is returned when the http status is not 200, 404, 410"""
+
+        httpretty.register_uri(httpretty.GET,
+                               LAUNCHPAD_API_URL + "/~user1",
+                               body="",
+                               status=500)
 
         client = LaunchpadClient("mydistribution", package="mypackage")
         with self.assertRaises(requests.exceptions.HTTPError):
@@ -838,7 +843,7 @@ class TestLaunchpadCommand(unittest.TestCase):
         parser = LaunchpadCommand.setup_cmd_parser()
         self.assertIsInstance(parser, BackendCommandArgumentParser)
 
-        args = ['--tag', 'test', '--no-cache',
+        args = ['--tag', 'test', '--no-archive',
                 '--from-date', '1970-01-01',
                 '--items-per-page', '75',
                 '--sleep-time', '600',
@@ -848,7 +853,7 @@ class TestLaunchpadCommand(unittest.TestCase):
         self.assertEqual(parsed_args.distribution, 'mydistribution')
         self.assertEqual(parsed_args.tag, 'test')
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
-        self.assertEqual(parsed_args.no_cache, True)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.items_per_page, '75')
         self.assertEqual(parsed_args.sleep_time, '600')
 

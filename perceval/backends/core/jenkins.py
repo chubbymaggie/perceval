@@ -32,11 +32,11 @@ from ...backend import (Backend,
                         BackendCommandArgumentParser)
 from ...client import HttpClient
 
+CATEGORY_BUILD = "build"
+SLEEP_TIME = 10
+DETAIL_DEPTH = 1
 
 logger = logging.getLogger(__name__)
-
-
-SLEEP_TIME = 10
 
 
 class Jenkins(Backend):
@@ -48,41 +48,52 @@ class Jenkins(Backend):
 
     :param url: Jenkins url
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
+    :param archive: archive to store/retrieve items
     :param blacklist_jobs: exclude the jobs of this list while fetching
+    :param detail_depth: control the detail level of the data returned by the API
     :param sleep_time: minimun waiting time due to a timeout connection exception
     :param archive: collect builds already retrieved from an archive
     """
-    version = '0.8.0'
+    version = '0.11.0'
 
-    def __init__(self, url, tag=None, cache=None, blacklist_jobs=None,
-                 sleep_time=SLEEP_TIME, archive=None):
+    CATEGORIES = [CATEGORY_BUILD]
+
+    def __init__(self, url, tag=None, archive=None,
+                 blacklist_jobs=None, detail_depth=DETAIL_DEPTH, sleep_time=SLEEP_TIME):
         origin = url
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.url = url
         self.sleep_time = sleep_time
         self.blacklist_jobs = blacklist_jobs
+        self.detail_depth = detail_depth
 
         self.client = None
 
-    def fetch(self):
+    def fetch(self, category=CATEGORY_BUILD):
         """Fetch the builds from the url.
 
         The method retrieves, from a Jenkins url, the
         builds updated since the given date.
 
+        :param category: the category of items to fetch
+
         :returns: a generator of builds
         """
 
         kwargs = {}
-        items = super().fetch("build", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the contents"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the contents
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         logger.info("Looking for projects at url '%s'", self.url)
 
         nbuilds = 0  # number of builds processed
@@ -127,14 +138,6 @@ class Jenkins(Backend):
         logger.info("Total number of builds: %i", nbuilds)
 
     @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
-
-    @classmethod
     def has_archiving(cls):
         """Returns whether it supports archiving items on the fetch process.
 
@@ -176,23 +179,28 @@ class Jenkins(Backend):
         This backend only generates one type of item which is
         'build'.
         """
-        return 'build'
+        return CATEGORY_BUILD
 
     def _init_client(self, from_archive=False):
         """Init client"""
 
-        return JenkinsClient(self.url, self.blacklist_jobs, self.sleep_time,
+        return JenkinsClient(self.url, self.blacklist_jobs, self.detail_depth,
+                             self.sleep_time,
                              archive=self.archive, from_archive=from_archive)
 
 
 class JenkinsClient(HttpClient):
     """Jenkins API client.
 
-    This class implements a simple client to retrieve builds from
-    projects in a Jenkins node.
+    This class implements a simple client to retrieve jobs/builds from
+    projects in a Jenkins node. The amount of data returned for each request
+    depends on the detail_depth value selected (minimun and default is 1).
+    Note that increasing the detail_depth may considerably slow down the
+    fetch operation and cause connection broken errors.
 
     :param url: URL of jenkins node: https://build.opnfv.org/ci
     :param blacklist_jobs: exclude the jobs of this list while fetching
+    :param detail_depth: set the detail level of the data returned by the API
     :param sleep_time: minimun waiting time due to a timeout connection exception
     :param archive: an archive to store/read fetched data
     :param from_archive: it tells whether to write/read the archive
@@ -201,11 +209,12 @@ class JenkinsClient(HttpClient):
     """
     MAX_RETRIES = 5
 
-    def __init__(self, url, blacklist_jobs=None, sleep_time=SLEEP_TIME,
+    def __init__(self, url, blacklist_jobs=None, detail_depth=DETAIL_DEPTH, sleep_time=SLEEP_TIME,
                  archive=None, from_archive=False):
         super().__init__(url, sleep_time=sleep_time, extra_status_forcelist=[410, 502, 503],
                          archive=archive, from_archive=from_archive)
         self.blacklist_jobs = blacklist_jobs
+        self.detail_depth = detail_depth
 
     def get_jobs(self):
         """ Retrieve all jobs"""
@@ -222,10 +231,10 @@ class JenkinsClient(HttpClient):
             logging.info("Not getting blacklisted job: %s", job_name)
             return
 
-        # depth=2 to get builds details
-        url_build = urijoin(self.base_url, "job", job_name, "api", "json?depth=2")
+        payload = {'depth': self.detail_depth}
+        url_build = urijoin(self.base_url, "job", job_name, "api", "json")
 
-        response = self.fetch(url_build)
+        response = self.fetch(url_build, payload=payload)
         return response.text
 
 
@@ -238,7 +247,7 @@ class JenkinsCommand(BackendCommand):
     def setup_cmd_parser():
         """Returns the Jenkins argument parser."""
 
-        parser = BackendCommandArgumentParser(cache=True)
+        parser = BackendCommandArgumentParser(archive=True)
 
         # Jenkins options
         group = parser.parser.add_argument_group('Jenkins arguments')
@@ -246,8 +255,12 @@ class JenkinsCommand(BackendCommand):
                            nargs='*',
                            help="Wrong jobs that must not be retrieved.")
 
+        group.add_argument('--detail-depth', dest='detail_depth',
+                           type=int, default=DETAIL_DEPTH,
+                           help="Detail level of the Jenkins data.")
+
         group.add_argument('--sleep-time', dest='sleep_time',
-                           type=int,
+                           type=int, default=SLEEP_TIME,
                            help="Minimun time to wait after a Timeout connection error.")
 
         # Required arguments

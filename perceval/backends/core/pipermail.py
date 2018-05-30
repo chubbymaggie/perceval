@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -34,14 +34,10 @@ import requests
 from grimoirelab.toolkit.datetime import datetime_to_utc
 from grimoirelab.toolkit.uris import urijoin
 
-from .mbox import MBox, MailingList
+from .mbox import MBox, MailingList, CATEGORY_MESSAGE
 from ...backend import (BackendCommand,
                         BackendCommandArgumentParser)
 from ...utils import DEFAULT_DATETIME
-
-
-logger = logging.getLogger(__name__)
-
 
 PIPERMAIL_COMPRESSED_TYPES = ['.gz', '.bz2', '.zip',
                               '.tar', '.tar.gz', '.tar.bz2',
@@ -50,6 +46,8 @@ PIPERMAIL_ACCEPTED_TYPES = ['.mbox', '.txt']
 PIPERMAIL_TYPES = PIPERMAIL_COMPRESSED_TYPES + PIPERMAIL_ACCEPTED_TYPES
 
 MOD_MBOX_THREAD_STR = "/thread"
+
+logger = logging.getLogger(__name__)
 
 
 class Pipermail(MBox):
@@ -62,39 +60,48 @@ class Pipermail(MBox):
 
     :param url: URL to the Pipermail archiver
     :param dirpath: directory path where the mboxes are stored
+    :param verify: allows to disable SSL verification
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: archive to read/store data fetched by the backend
+    :param archive: archive to store/retrieve items
     """
-    version = '0.5.0'
+    version = '0.8.0'
 
-    def __init__(self, url, dirpath, tag=None, cache=None, archive=None):
-        super().__init__(url, dirpath, tag=tag, cache=cache, archive=archive)
+    CATEGORIES = [CATEGORY_MESSAGE]
+
+    def __init__(self, url, dirpath, verify=True, tag=None, archive=None):
+        super().__init__(url, dirpath, tag=tag, archive=archive)
         self.url = url
+        self.verify = verify
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_MESSAGE, from_date=DEFAULT_DATETIME):
         """Fetch the messages from the Pipermail archiver.
 
         The method fetches the mbox files from a remote Pipermail
         archiver and retrieves the messages stored on them.
 
+        :param category: the category of items to fetch
         :param from_date: obtain messages since this date
 
         :returns: a generator of messages
         """
-        items = super().fetch(from_date)
+        items = super().fetch(category, from_date)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the messages"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the messages
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
 
         logger.info("Looking for messages from '%s' since %s",
                     self.url, str(from_date))
 
-        mailing_list = PipermailList(self.url, self.dirpath)
+        mailing_list = PipermailList(self.url, self.dirpath, self.verify)
         mailing_list.fetch(from_date=from_date)
 
         messages = self._fetch_and_parse_messages(mailing_list, from_date)
@@ -103,14 +110,6 @@ class Pipermail(MBox):
             yield message
 
         logger.info("Fetch process completed")
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -155,6 +154,9 @@ class PipermailCommand(BackendCommand):
         group = parser.parser.add_argument_group('Pipermail arguments')
         group.add_argument('--mboxes-path', dest='mboxes_path',
                            help="Path where mbox files will be stored")
+        group.add_argument('--verify', dest='verify',
+                           default=True,
+                           help="Value 'True' enable SSL verification")
 
         # Required arguments
         parser.parser.add_argument('url',
@@ -172,10 +174,12 @@ class PipermailList(MailingList):
 
     :param url: URL to the Pipermail archiver for this list
     :param dirpath: path to the local mboxes archives
+    :param verify: allows to disable SSL verification
     """
-    def __init__(self, url, dirpath):
+    def __init__(self, url, dirpath, verify=True):
         super().__init__(url, dirpath)
         self.url = url
+        self.verify = verify
 
     def fetch(self, from_date=DEFAULT_DATETIME):
         """Fetch the mbox files from the remote archiver.
@@ -202,7 +206,7 @@ class PipermailList(MailingList):
 
         from_date = datetime_to_utc(from_date)
 
-        r = requests.get(self.url)
+        r = requests.get(self.url, verify=self.verify)
         r.raise_for_status()
 
         links = self._parse_archive_links(r.text)
@@ -293,12 +297,16 @@ class PipermailList(MailingList):
         return dt
 
     def _download_archive(self, url, filepath):
-        r = requests.get(url, stream=True)
-        r.raise_for_status()
-
         try:
-            with open(filepath, 'wb') as fd:
-                fd.write(r.raw.read())
+            r = requests.get(url, stream=True, verify=self.verify)
+            r.raise_for_status()
+            self._write_archive(r, filepath)
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 403:
+                logger.warning("Ignoring %s archive due to: %s", url, str(e))
+                return False
+            else:
+                raise e
         except OSError as e:
             logger.warning("Ignoring %s archive due to: %s", url, str(e))
             return False
@@ -306,3 +314,8 @@ class PipermailList(MailingList):
         logger.debug("%s archive downloaded and stored in %s", url, filepath)
 
         return True
+
+    @staticmethod
+    def _write_archive(r, filepath):
+        with open(filepath, 'wb') as fd:
+            fd.write(r.raw.read())

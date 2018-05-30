@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -20,20 +20,18 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+import copy
 import datetime
 import dateutil.tz
 import httpretty
 import os
 import pkg_resources
-import sys
 import time
 import unittest
+import unittest.mock
 
 import requests
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -43,7 +41,7 @@ from perceval.backends.core.meetup import (Meetup,
                                            MeetupCommand,
                                            MeetupClient,
                                            MIN_RATE_LIMIT)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 
 MEETUP_URL = 'https://api.meetup.com'
@@ -162,6 +160,16 @@ def setup_http_server(rate_limit=-1, reset_rate_limit=-1):
     return http_requests
 
 
+class MockedMeetupClient(MeetupClient):
+    """Mocked meetup client for testing"""
+
+    def __init__(self, token, max_items, min_rate_to_sleep, sleep_for_rate):
+        super().__init__(token, max_items=max_items,
+                         min_rate_to_sleep=min_rate_to_sleep,
+                         sleep_for_rate=sleep_for_rate)
+        self.rate_limit_reset_ts = -1
+
+
 class TestMeetupBackend(unittest.TestCase):
     """Meetup backend tests"""
 
@@ -186,11 +194,6 @@ class TestMeetupBackend(unittest.TestCase):
         meetup = Meetup('mygroup', 'aaaa', tag='')
         self.assertEqual(meetup.origin, 'https://meetup.com/')
         self.assertEqual(meetup.tag, 'https://meetup.com/')
-
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(Meetup.has_caching(), False)
 
     def test_has_archiving(self):
         """Test if it returns True when has_archiving is called"""
@@ -538,7 +541,8 @@ class TestMeetupBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = Meetup('sqlpass-es', 'aaaa', max_items=2, archive=self.archive)
+        self.backend_write_archive = Meetup('sqlpass-es', 'aaaa', max_items=2, archive=self.archive)
+        self.backend_read_archive = Meetup('sqlpass-es', 'bbbb', max_items=2, archive=self.archive)
 
     @httpretty.activate
     def test_fetch_from_archive(self):
@@ -604,7 +608,7 @@ class TestMeetupCommand(unittest.TestCase):
                 '--api-token', 'aaaa',
                 '--max-items', '5',
                 '--tag', 'test',
-                '--no-cache',
+                '--no-archive',
                 '--from-date', '1970-01-01',
                 '--to-date', '2016-01-01',
                 '--sleep-for-rate',
@@ -619,7 +623,7 @@ class TestMeetupCommand(unittest.TestCase):
         self.assertEqual(parsed_args.api_token, 'aaaa')
         self.assertEqual(parsed_args.max_items, 5)
         self.assertEqual(parsed_args.tag, 'test')
-        self.assertEqual(parsed_args.no_cache, True)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
         self.assertEqual(parsed_args.to_date, expected_ts)
         self.assertEqual(parsed_args.sleep_for_rate, True)
@@ -784,6 +788,16 @@ class TestMeetupClient(unittest.TestCase):
         self.assertRegex(req.path, '/sqlpass-es/events/1/rsvps')
         self.assertDictEqual(req.querystring, expected)
 
+    def test_calculate_time_to_reset(self):
+        """Test whether the time to reset is zero if the sleep time is negative"""
+
+        client = MockedMeetupClient('aaaa', max_items=2,
+                                    min_rate_to_sleep=2,
+                                    sleep_for_rate=True)
+
+        time_to_reset = client.calculate_time_to_reset()
+        self.assertEqual(time_to_reset, 0)
+
     @httpretty.activate
     def test_sleep_for_rate(self):
         """ Test if the clients sleeps when the rate limit is reached"""
@@ -881,6 +895,25 @@ class TestMeetupClient(unittest.TestCase):
 
         end = float(time.time())
         self.assertGreater(end, expected)
+
+    def test_sanitize_for_archive(self):
+        """Test whether the sanitize method works properly"""
+
+        url = "http://example.com"
+        headers = "headers-information"
+        payload = {'page': 2,
+                   'sign': ('true',),
+                   'order': 'updated',
+                   'scroll': 'since:2016-01-01T00:00:00.000Z',
+                   'key': 'aaaa'}
+
+        s_url, s_headers, s_payload = MeetupClient.sanitize_for_archive(url, headers, copy.deepcopy(payload))
+        payload.pop('key')
+        payload.pop('sign')
+
+        self.assertEqual(url, s_url)
+        self.assertEqual(headers, s_headers)
+        self.assertEqual(payload, s_payload)
 
 
 if __name__ == "__main__":

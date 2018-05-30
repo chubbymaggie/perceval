@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -39,7 +39,7 @@ from ...utils import DEFAULT_DATETIME
 
 logger = logging.getLogger(__name__)
 
-
+CATEGORY_BUG = "bug"
 MAX_BUGS = 500  # Maximum number of bugs per query
 MAX_CONTENTS = 25  # Maximum number of bug contents (history, comments) per query
 
@@ -58,16 +58,17 @@ class BugzillaREST(Backend):
     :param api_token: Bugzilla token
     :param max_bugs: maximum number of bugs requested on the same query
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: collect issues already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.7.0'
+    version = '0.8.3'
+
+    CATEGORIES = [CATEGORY_BUG]
 
     def __init__(self, url, user=None, password=None, api_token=None,
-                 max_bugs=MAX_BUGS, tag=None, cache=None, archive=None):
+                 max_bugs=MAX_BUGS, tag=None, archive=None):
         origin = url
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.url = url
         self.user = user
         self.password = password
@@ -75,12 +76,13 @@ class BugzillaREST(Backend):
         self.max_bugs = max(1, max_bugs)
         self.client = None
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_BUG, from_date=DEFAULT_DATETIME):
         """Fetch the bugs from the repository.
 
         The method retrieves, from a Bugzilla repository, the bugs
         updated since the given date.
 
+        :param category: the category of items to fetch
         :param from_date: obtain bugs updated since this date
 
         :returns: a generator of bugs
@@ -89,12 +91,18 @@ class BugzillaREST(Backend):
             from_date = DEFAULT_DATETIME
 
         kwargs = {'from_date': from_date}
-        items = super().fetch("bug", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch bugs"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the bugs
+
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
 
         from_date = kwargs['from_date']
 
@@ -107,14 +115,6 @@ class BugzillaREST(Backend):
             yield bug
 
         logger.info("Fetch process completed: %s bugs fetched", nbugs)
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -162,7 +162,7 @@ class BugzillaREST(Backend):
         This backend only generates one type of item which is
         'bug'.
         """
-        return 'bug'
+        return CATEGORY_BUG
 
     def _init_client(self, from_archive=False):
         """Init client"""
@@ -425,6 +425,28 @@ class BugzillaRESTClient(HttpClient):
 
         return r.text
 
+    @staticmethod
+    def sanitize_for_archive(url, headers, payload):
+        """Sanitize payload of a HTTP request by removing the login, password and token information
+        before storing/retrieving archived items
+
+        :param: url: HTTP url request
+        :param: headers: HTTP headers request
+        :param: payload: HTTP payload request
+
+        :returns url, headers and the sanitized payload
+        """
+        if BugzillaRESTClient.PBUGZILLA_LOGIN in payload:
+            payload.pop(BugzillaRESTClient.PBUGZILLA_LOGIN)
+
+        if BugzillaRESTClient.PBUGZILLA_PASSWORD in payload:
+            payload.pop(BugzillaRESTClient.PBUGZILLA_PASSWORD)
+
+        if BugzillaRESTClient.PBUGZILLA_TOKEN in payload:
+            payload.pop(BugzillaRESTClient.PBUGZILLA_TOKEN)
+
+        return url, headers, payload
+
 
 class BugzillaRESTCommand(BackendCommand):
     """Class to run BugzillaREST backend from the command line."""
@@ -438,7 +460,7 @@ class BugzillaRESTCommand(BackendCommand):
         parser = BackendCommandArgumentParser(from_date=True,
                                               basic_auth=True,
                                               token_auth=True,
-                                              cache=True)
+                                              archive=True)
 
         # BugzillaREST options
         group = parser.parser.add_argument_group('Bugzilla REST arguments')

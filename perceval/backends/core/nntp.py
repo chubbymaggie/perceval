@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -34,13 +34,13 @@ from ...backend import (Backend,
 from ...errors import ArchiveError, ParseError
 from ...utils import message_to_dict
 
+CATEGORY_ARTICLE = "article"
+DEFAULT_OFFSET = 1
 
 # Hack to avoid "line too long" errors
 nntplib._MAXLINE = 4096
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_OFFSET = 1
 
 
 class NNTP(Backend):
@@ -53,25 +53,27 @@ class NNTP(Backend):
     :param host: host
     :param group: name of the group
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: an archive to read/store fetched data
+    :param archive: archive to store/retrieve items
     """
-    version = '0.3.0'
+    version = '0.5.2'
 
-    def __init__(self, host, group, tag=None, cache=None, archive=None):
+    CATEGORIES = [CATEGORY_ARTICLE]
+
+    def __init__(self, host, group, tag=None, archive=None):
         origin = host + '-' + group
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.host = host
         self.group = group
         self.client = None
 
-    def fetch(self, offset=DEFAULT_OFFSET):
+    def fetch(self, category=CATEGORY_ARTICLE, offset=DEFAULT_OFFSET):
         """Fetch articles posted on a news group.
 
         This method fetches those messages or articles published
         on a news group starting on the given offset.
 
+        :param category: the category of items to fetch
         :param offset: obtain messages from this offset
 
         :returns: a generator of articles
@@ -80,13 +82,18 @@ class NNTP(Backend):
             offset = DEFAULT_OFFSET
 
         kwargs = {'offset': offset}
-        items = super().fetch("article", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch articles"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the articles
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         offset = kwargs['offset']
 
         logger.info("Fetching articles of '%s' group on '%s' offset %s",
@@ -138,14 +145,6 @@ class NNTP(Backend):
         return item
 
     @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
-
-    @classmethod
     def has_archiving(cls):
         """Returns whether it supports archiving items on the fetch process.
 
@@ -194,7 +193,7 @@ class NNTP(Backend):
         This backend only generates one type of item which is
         'article'.
         """
-        return 'article'
+        return CATEGORY_ARTICLE
 
     @staticmethod
     def parse_article(raw_article):
@@ -367,7 +366,7 @@ class NNTPCommand(BackendCommand):
         """Returns the NNTP argument parser."""
 
         parser = BackendCommandArgumentParser(offset=True,
-                                              cache=True)
+                                              archive=True)
 
         # Required arguments
         parser.parser.add_argument('host',

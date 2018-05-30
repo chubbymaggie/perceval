@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -34,9 +34,7 @@ from ...client import HttpClient, RateLimitHandler
 from ...errors import RepositoryError
 from ...utils import DEFAULT_DATETIME
 
-
-logger = logging.getLogger(__name__)
-
+CATEGORY_EVENT = "event"
 
 MEETUP_URL = 'https://meetup.com/'
 MEETUP_API_URL = 'https://api.meetup.com/'
@@ -48,6 +46,8 @@ MIN_RATE_LIMIT = 1
 
 # Time to avoid too many request exception
 SLEEP_TIME = 30
+
+logger = logging.getLogger(__name__)
 
 
 class Meetup(Backend):
@@ -61,23 +61,24 @@ class Meetup(Backend):
     :param api_token: token or key needed to use the API
     :param max_items:  maximum number of issues requested on the same query
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
+    :param archive: archive to store/retrieve items
     :param sleep_for_rate: sleep until rate limit is reset
     :param min_rate_to_sleep: minimun rate needed to sleep until
          it will be reset
     :param sleep_time: minimun waiting time to avoid too many request
          exception
-    :param archive: collect events already retrieved from an archive
     """
-    version = '0.9.0'
+    version = '0.11.4'
+
+    CATEGORIES = [CATEGORY_EVENT]
 
     def __init__(self, group, api_token, max_items=MAX_ITEMS,
-                 tag=None, cache=None,
+                 tag=None, archive=None,
                  sleep_for_rate=False, min_rate_to_sleep=MIN_RATE_LIMIT,
-                 sleep_time=SLEEP_TIME, archive=None):
+                 sleep_time=SLEEP_TIME):
         origin = MEETUP_URL
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.group = group
         self.max_items = max_items
         self.api_token = api_token
@@ -87,13 +88,14 @@ class Meetup(Backend):
 
         self.client = None
 
-    def fetch(self, from_date=DEFAULT_DATETIME, to_date=None):
+    def fetch(self, category=CATEGORY_EVENT, from_date=DEFAULT_DATETIME, to_date=None):
         """Fetch the events from the server.
 
         This method fetches those events of a group stored on the server
         that were updated since the given date. Data comments and rsvps
         are included within each event.
 
+        :param category: the category of items to fetch
         :param from_date: obtain events updated since this date
         :param to_date: obtain events updated before this date
 
@@ -105,13 +107,18 @@ class Meetup(Backend):
         from_date = datetime_to_utc(from_date)
 
         kwargs = {"from_date": from_date, "to_date": to_date}
-        items = super().fetch("event", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the events"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the events
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
         to_date = kwargs['to_date']
 
@@ -149,14 +156,6 @@ class Meetup(Backend):
                 break
 
         logger.info("Fetch process completed: %s events fetched", nevents)
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -204,7 +203,7 @@ class Meetup(Backend):
         This backend only generates one type of item which is
         'event'.
         """
-        return 'event'
+        return CATEGORY_EVENT
 
     @staticmethod
     def parse_json(raw_json):
@@ -268,7 +267,7 @@ class MeetupCommand(BackendCommand):
         parser = BackendCommandArgumentParser(from_date=True,
                                               to_date=True,
                                               token_auth=True,
-                                              cache=True)
+                                              archive=True)
 
         # Meetup options
         group = parser.parser.add_argument_group('Meetup arguments')
@@ -342,6 +341,10 @@ class MeetupClient(HttpClient, RateLimitHandler):
 
     def calculate_time_to_reset(self):
         """Number of seconds to wait. They are contained in the rate limit reset header"""
+
+        if self.rate_limit_reset_ts < 0:
+            self.rate_limit_reset_ts = 0
+
         return self.rate_limit_reset_ts
 
     def events(self, group, from_date=DEFAULT_DATETIME):
@@ -407,6 +410,25 @@ class MeetupClient(HttpClient, RateLimitHandler):
         for page in self._fetch(resource, params):
             yield page
 
+    @staticmethod
+    def sanitize_for_archive(url, headers, payload):
+        """Sanitize payload of a HTTP request by removing the token information
+        before storing/retrieving archived items
+
+        :param: url: HTTP url request
+        :param: headers: HTTP headers request
+        :param: payload: HTTP payload request
+
+        :returns url, headers and the sanitized payload
+        """
+        if MeetupClient.PKEY in payload:
+            payload.pop(MeetupClient.PKEY)
+
+        if MeetupClient.PSIGN in payload:
+            payload.pop(MeetupClient.PSIGN)
+
+        return url, headers, payload
+
     def _fetch(self, resource, params):
         """Fetch a resource.
 
@@ -430,9 +452,13 @@ class MeetupClient(HttpClient, RateLimitHandler):
             logger.debug("Meetup client calls resource: %s params: %s",
                          resource, str(params))
 
-            self.sleep_for_rate_limit()
+            if not self.from_archive:
+                self.sleep_for_rate_limit()
+
             r = self.fetch(url, payload=params)
-            self.update_rate_limit(r)
+
+            if not self.from_archive:
+                self.update_rate_limit(r)
 
             yield r.text
 

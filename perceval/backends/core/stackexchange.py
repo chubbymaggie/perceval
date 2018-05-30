@@ -34,6 +34,7 @@ from ...backend import (Backend,
 from ...client import HttpClient
 from ...utils import DEFAULT_DATETIME
 
+CATEGORY_QUESTION = "question"
 
 MAX_QUESTIONS = 100  # Maximum number of reviews per query
 
@@ -52,16 +53,17 @@ class StackExchange(Backend):
     :param api_token: StackExchange access_token for the API
     :param max_questions: max of questions per page retrieved
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: collect questions already retrieved from an archive
+    :param archive: archive to store/retrieve items
     """
-    version = '0.8.0'
+    version = '0.10.4'
+
+    CATEGORIES = [CATEGORY_QUESTION]
 
     def __init__(self, site, tagged=None, api_token=None,
-                 max_questions=None, tag=None, cache=None, archive=None):
+                 max_questions=MAX_QUESTIONS, tag=None, archive=None):
         origin = site
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.site = site
         self.api_token = api_token
         self.tagged = tagged
@@ -69,7 +71,7 @@ class StackExchange(Backend):
 
         self.client = None
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_QUESTION, from_date=DEFAULT_DATETIME):
         """Fetch the questions from the site.
 
         The method retrieves, from a StackExchange site, the
@@ -85,13 +87,18 @@ class StackExchange(Backend):
         from_date = datetime_to_utc(from_date)
 
         kwargs = {'from_date': from_date}
-        items = super().fetch("question", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the questions"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the questions
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
 
         logger.info("Looking for questions at site '%s', with tag '%s' and updated from '%s'",
@@ -100,19 +107,9 @@ class StackExchange(Backend):
         whole_pages = self.client.get_questions(from_date)
 
         for whole_page in whole_pages:
-            self._push_cache_queue(whole_page)
-            self._flush_cache_queue()
             questions = self.parse_questions(whole_page)
             for question in questions:
                 yield question
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -157,7 +154,7 @@ class StackExchange(Backend):
         This backend only generates one type of item which is
         'question'.
         """
-        return 'question'
+        return CATEGORY_QUESTION
 
     @staticmethod
     def parse_questions(raw_page):
@@ -207,37 +204,12 @@ class StackExchangeClient(HttpClient):
     STACKEXCHANGE_API_URL = 'https://api.stackexchange.com'
     VERSION_API = '2.2'
 
-    def __init__(self, site, tagged, token, max_questions, archive=None, from_archive=False):
+    def __init__(self, site, tagged, token, max_questions=MAX_QUESTIONS, archive=None, from_archive=False):
         super().__init__(self.STACKEXCHANGE_API_URL, archive=archive, from_archive=from_archive)
         self.site = site
         self.tagged = tagged
         self.token = token
         self.max_questions = max_questions
-
-    def __build_payload(self, page, from_date, order='desc', sort='activity'):
-        payload = {'page': page,
-                   'pagesize': self.max_questions,
-                   'order': order,
-                   'sort': sort,
-                   'tagged': self.tagged,
-                   'site': self.site,
-                   'key': self.token,
-                   'filter': self.QUESTIONS_FILTER}
-        if from_date:
-            timestamp = int(from_date.timestamp())
-            payload['min'] = timestamp
-        return payload
-
-    def __log_status(self, quota_remaining, quota_max, page_size, total):
-
-        logger.debug("Rate limit: %s/%s" % (quota_remaining,
-                                            quota_max))
-        if (total != 0):
-            nquestions = min(page_size, total)
-            logger.info("Fetching questions: %s/%s" % (nquestions,
-                                                       total))
-        else:
-            logger.info("No questions were found.")
 
     def get_questions(self, from_date):
         """Retrieve all the questions from a given date.
@@ -282,6 +254,47 @@ class StackExchangeClient(HttpClient):
                                   nquestions,
                                   tquestions)
 
+    @staticmethod
+    def sanitize_for_archive(url, headers, payload):
+        """Sanitize payload of a HTTP request by removing the token information
+        before storing/retrieving archived items
+
+        :param: url: HTTP url request
+        :param: headers: HTTP headers request
+        :param: payload: HTTP payload request
+
+        :returns url, headers and the sanitized payload
+        """
+        if 'key' in payload:
+            payload.pop('key')
+
+        return url, headers, payload
+
+    def __build_payload(self, page, from_date, order='desc', sort='activity'):
+        payload = {'page': page,
+                   'pagesize': self.max_questions,
+                   'order': order,
+                   'sort': sort,
+                   'tagged': self.tagged,
+                   'site': self.site,
+                   'key': self.token,
+                   'filter': self.QUESTIONS_FILTER}
+        if from_date:
+            timestamp = int(from_date.timestamp())
+            payload['min'] = timestamp
+        return payload
+
+    def __log_status(self, quota_remaining, quota_max, page_size, total):
+
+        logger.debug("Rate limit: %s/%s" % (quota_remaining,
+                                            quota_max))
+        if (total != 0):
+            nquestions = min(page_size, total)
+            logger.info("Fetching questions: %s/%s" % (nquestions,
+                                                       total))
+        else:
+            logger.info("No questions were found.")
+
 
 class StackExchangeCommand(BackendCommand):
     """Class to run StackExchange backend from the command line."""
@@ -294,7 +307,7 @@ class StackExchangeCommand(BackendCommand):
 
         parser = BackendCommandArgumentParser(from_date=True,
                                               token_auth=True,
-                                              cache=True)
+                                              archive=True)
 
         # StackExchange options
         group = parser.parser.add_argument_group('StackExchange arguments')

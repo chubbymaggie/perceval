@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -20,18 +20,15 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+import copy
 import datetime
 import dateutil
 import httpretty
 import os
 import pkg_resources
-import sys
 import unittest
 import unittest.mock
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -40,7 +37,7 @@ from perceval.backends.core.slack import (Slack,
                                           SlackClient,
                                           SlackClientError,
                                           SlackCommand)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 
 SLACK_API_URL = 'https://slack.com/api'
@@ -157,11 +154,6 @@ class TestSlackBackend(unittest.TestCase):
         slack = Slack('C011DUKE8', 'aaaa', tag='')
         self.assertEqual(slack.origin, 'https://slack.com/C011DUKE8')
         self.assertEqual(slack.tag, 'https://slack.com/C011DUKE8')
-
-    def test_has_caching(self):
-        """Test if it returns True when has_caching is called"""
-
-        self.assertEqual(Slack.has_caching(), False)
 
     def test_has_archiving(self):
         """Test if it returns True when has_archiving is called"""
@@ -446,7 +438,8 @@ class TestSlackBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = Slack('C011DUKE8', 'aaaa', max_items=5, archive=self.archive)
+        self.backend_write_archive = Slack('C011DUKE8', 'aaaa', max_items=5, archive=self.archive)
+        self.backend_read_archive = Slack('C011DUKE8', 'bbbb', max_items=5, archive=self.archive)
 
     @httpretty.activate
     @unittest.mock.patch('perceval.backends.core.slack.datetime_utcnow')
@@ -586,6 +579,20 @@ class TestSlackClient(unittest.TestCase):
         with self.assertRaises(SlackClientError):
             _ = client.history('CH0')
 
+    def test_sanitize_for_archive(self):
+        """Test whether the sanitize method works properly"""
+
+        url = "http://example.com"
+        headers = "headers-information"
+        payload = {'token': 'aaaa', 'channel': 'C011DUKE8'}
+
+        s_url, s_headers, s_payload = SlackClient.sanitize_for_archive(url, headers, copy.deepcopy(payload))
+        payload.pop("token")
+
+        self.assertEqual(url, s_url)
+        self.assertEqual(headers, s_headers)
+        self.assertEqual(payload, s_payload)
+
 
 class TestSlackCommand(unittest.TestCase):
     """SlackCommand unit tests"""
@@ -601,7 +608,7 @@ class TestSlackCommand(unittest.TestCase):
         parser = SlackCommand.setup_cmd_parser()
         self.assertIsInstance(parser, BackendCommandArgumentParser)
 
-        args = ['--tag', 'test', '--no-cache',
+        args = ['--tag', 'test', '--no-archive',
                 '--api-token', 'abcdefgh',
                 '--from-date', '1970-01-01',
                 '--max-items', '10',
@@ -611,7 +618,7 @@ class TestSlackCommand(unittest.TestCase):
         self.assertEqual(parsed_args.channel, 'C001')
         self.assertEqual(parsed_args.tag, 'test')
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
-        self.assertEqual(parsed_args.no_cache, True)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.api_token, 'abcdefgh')
         self.assertEqual(parsed_args.max_items, 10)
 

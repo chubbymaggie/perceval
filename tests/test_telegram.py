@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,20 +23,16 @@
 import httpretty
 import os
 import pkg_resources
-import sys
 import unittest
 import urllib
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
 from perceval.backends.core.telegram import (Telegram,
                                              TelegramCommand,
                                              TelegramBotClient)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 TELEGRAM_BOT = 'mybot'
 TELEGRAM_TOKEN = '12345678'
@@ -108,11 +104,6 @@ class TestTelegramBackend(unittest.TestCase):
         self.assertEqual(tlg.bot, TELEGRAM_BOT)
         self.assertEqual(tlg.origin, origin)
         self.assertEqual(tlg.tag, origin)
-
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(Telegram.has_caching(), False)
 
     def test_has_archiving(self):
         """Test if it returns True when has_archiving is called"""
@@ -268,7 +259,8 @@ class TestTelegramBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = Telegram(TELEGRAM_BOT, TELEGRAM_TOKEN, archive=self.archive)
+        self.backend_write_archive = Telegram(TELEGRAM_BOT, TELEGRAM_TOKEN, archive=self.archive)
+        self.backend_read_archive = Telegram(TELEGRAM_BOT, "another-token", archive=self.archive)
 
     @httpretty.activate
     def test_fetch_from_archive(self):
@@ -329,7 +321,7 @@ class TestTelegramCommand(unittest.TestCase):
                 '--offset', '10',
                 '--chats', '-10000',
                 '--tag', 'test',
-                '--no-cache']
+                '--no-archive']
 
         parsed_args = parser.parse(*args)
         self.assertEqual(parsed_args.bot, 'mybot')
@@ -337,7 +329,7 @@ class TestTelegramCommand(unittest.TestCase):
         self.assertEqual(parsed_args.offset, 10)
         self.assertEqual(parsed_args.chats, [-10000])
         self.assertEqual(parsed_args.tag, 'test')
-        self.assertEqual(parsed_args.no_cache, True)
+        self.assertEqual(parsed_args.no_archive, True)
 
 
 class TestTelegramBotClient(unittest.TestCase):
@@ -383,6 +375,19 @@ class TestTelegramBotClient(unittest.TestCase):
         self.assertEqual(req.method, 'GET')
         self.assertRegex(req.path, '/bot12345678/getUpdates')
         self.assertDictEqual(req.querystring, expected)
+
+    def test_sanitize_for_archive(self):
+        """Test whether the sanitize method works properly"""
+
+        url = "https://api.telegram.org/bot12345678/getUpdates"
+        headers = "headers-information"
+        payload = "payload-information"
+
+        s_url, s_headers, s_payload = TelegramBotClient.sanitize_for_archive(url, headers, payload)
+
+        self.assertEqual(s_url, "https://api.telegram.org/botXXXXX/getUpdates")
+        self.assertEqual(s_headers, headers)
+        self.assertEqual(s_payload, payload)
 
 
 if __name__ == "__main__":

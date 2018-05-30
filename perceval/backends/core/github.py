@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -24,11 +24,11 @@
 
 import json
 import logging
-import time
 
 import requests
-
-from grimoirelab.toolkit.datetime import datetime_to_utc, str_to_datetime
+from grimoirelab.toolkit.datetime import (datetime_to_utc,
+                                          datetime_utcnow,
+                                          str_to_datetime)
 from grimoirelab.toolkit.uris import urijoin
 
 from ...backend import (Backend,
@@ -38,6 +38,8 @@ from ...client import HttpClient, RateLimitHandler
 
 from ...utils import DEFAULT_DATETIME
 
+CATEGORY_ISSUE = "issue"
+CATEGORY_PULL_REQUEST = "pull_request"
 
 GITHUB_URL = "https://github.com/"
 GITHUB_API_URL = "https://api.github.com"
@@ -51,6 +53,7 @@ DEFAULT_SLEEP_TIME = 1
 MAX_RETRIES = 5
 
 TARGET_ISSUE_FIELDS = ['user', 'assignee', 'assignees', 'comments', 'reactions']
+TARGET_PULL_FIELDS = ['user', 'review_comments', 'requested_reviewers', "merged_by"]
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +71,7 @@ class GitHub(Backend):
         when no value is set the backend will be fetch the data
         from the GitHub public site.
     :param tag: label used to mark the data
-    :param cache: collect issues already retrieved in cache
-    :param archive: collect issues already retrieved from an archive
+    :param archive: archive to store/retrieve items
     :param sleep_for_rate: sleep until rate limit is reset
     :param min_rate_to_sleep: minimun rate needed to sleep until
          it will be reset
@@ -78,17 +80,19 @@ class GitHub(Backend):
     :param sleep_time: time to sleep in case
         of connection problems
     """
-    version = '0.13.0'
+    version = '0.16.1'
+
+    CATEGORIES = [CATEGORY_ISSUE, CATEGORY_PULL_REQUEST]
 
     def __init__(self, owner=None, repository=None,
                  api_token=None, base_url=None,
-                 tag=None, cache=None, archive=None,
+                 tag=None, archive=None,
                  sleep_for_rate=False, min_rate_to_sleep=MIN_RATE_LIMIT,
                  max_retries=MAX_RETRIES, sleep_time=DEFAULT_SLEEP_TIME):
         origin = base_url if base_url else GITHUB_URL
         origin = urijoin(origin, owner, repository)
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
 
         self.owner = owner
         self.repository = repository
@@ -103,12 +107,13 @@ class GitHub(Backend):
         self.client = None
         self._users = {}  # internal users cache
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_ISSUE, from_date=DEFAULT_DATETIME):
         """Fetch the issues from the repository.
 
         The method retrieves, from a GitHub repository, the issues
         updated since the given date.
 
+        :param category: the category of items to fetch
         :param from_date: obtain issues updated since this date
 
         :returns: a generator of issues
@@ -119,47 +124,26 @@ class GitHub(Backend):
         from_date = datetime_to_utc(from_date)
 
         kwargs = {'from_date': from_date}
-        items = super().fetch("issue", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the issues"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the items (issues or pull_requests)
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
 
-        issues_groups = self.client.issues(from_date=from_date)
+        if category == CATEGORY_ISSUE:
+            items = self.__fetch_issues(from_date)
+        else:
+            items = self.__fetch_pull_requests(from_date)
 
-        for raw_issues in issues_groups:
-            issues = json.loads(raw_issues)
-            for issue in issues:
-                self.__init_extra_issue_fields(issue)
-                for field in TARGET_ISSUE_FIELDS:
-
-                    if not issue[field]:
-                        continue
-
-                    if field == 'user':
-                        issue[field + '_data'] = self.__get_user(issue[field]['login'])
-                    elif field == 'assignee':
-                        issue[field + '_data'] = self.__get_issue_assignee(issue[field])
-                    elif field == 'assignees':
-                        issue[field + '_data'] = self.__get_issue_assignees(issue[field])
-                    elif field == 'comments':
-                        issue[field + '_data'] = self.__get_issue_comments(issue['number'])
-                    elif field == 'reactions':
-                        issue[field + '_data'] = \
-                            self.__get_issue_reactions(issue['number'], issue['reactions']['total_count'])
-
-                yield issue
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
+        return items
 
     @classmethod
     def has_archiving(cls):
@@ -204,10 +188,16 @@ class GitHub(Backend):
     def metadata_category(item):
         """Extracts the category from a GitHub item.
 
-        This backend only generates one type of item which is
-        'issue'.
+        This backend generates two types of item which are
+        'issue' and 'pull_request'.
         """
-        return 'issue'
+
+        if "base" in item:
+            category = CATEGORY_PULL_REQUEST
+        else:
+            category = CATEGORY_ISSUE
+
+        return category
 
     def _init_client(self, from_archive=False):
         """Init client"""
@@ -216,6 +206,57 @@ class GitHub(Backend):
                             self.sleep_for_rate, self.min_rate_to_sleep,
                             self.max_retries, self.sleep_time,
                             self.archive, from_archive)
+
+    def __fetch_issues(self, from_date):
+        """Fetch the issues"""
+
+        issues_groups = self.client.issues(from_date=from_date)
+
+        for raw_issues in issues_groups:
+            issues = json.loads(raw_issues)
+            for issue in issues:
+                self.__init_extra_issue_fields(issue)
+                for field in TARGET_ISSUE_FIELDS:
+
+                    if not issue[field]:
+                        continue
+
+                    if field == 'user':
+                        issue[field + '_data'] = self.__get_user(issue[field]['login'])
+                    elif field == 'assignee':
+                        issue[field + '_data'] = self.__get_issue_assignee(issue[field])
+                    elif field == 'assignees':
+                        issue[field + '_data'] = self.__get_issue_assignees(issue[field])
+                    elif field == 'comments':
+                        issue[field + '_data'] = self.__get_issue_comments(issue['number'])
+                    elif field == 'reactions':
+                        issue[field + '_data'] = \
+                            self.__get_issue_reactions(issue['number'], issue['reactions']['total_count'])
+
+                yield issue
+
+    def __fetch_pull_requests(self, from_date):
+        """Fetch the pull requests"""
+
+        raw_pulls = self.client.pulls(from_date=from_date)
+        for raw_pull in raw_pulls:
+            pull = json.loads(raw_pull)
+            self.__init_extra_pull_fields(pull)
+            for field in TARGET_PULL_FIELDS:
+
+                if not pull[field]:
+                    continue
+
+                if field == 'user':
+                    pull[field + '_data'] = self.__get_user(pull[field]['login'])
+                elif field == 'merged_by':
+                    pull[field + '_data'] = self.__get_user(pull[field]['login'])
+                elif field == 'review_comments':
+                    pull[field + '_data'] = self.__get_pull_review_comments(pull['number'])
+                elif field == 'requested_reviewers':
+                    pull[field + '_data'] = self.__get_pull_requested_reviewers(pull['number'])
+
+            yield pull
 
     def __get_issue_reactions(self, issue_number, total_count):
         """Get issue reactions"""
@@ -286,6 +327,56 @@ class GitHub(Backend):
 
         return assignees
 
+    def __get_pull_requested_reviewers(self, pr_number):
+        """Get pull request requested reviewers"""
+
+        requested_reviewers = []
+        group_requested_reviewers = self.client.pull_requested_reviewers(pr_number)
+
+        for raw_requested_reviewers in group_requested_reviewers:
+            group_requested_reviewers = json.loads(raw_requested_reviewers)
+
+            for requested_reviewer in group_requested_reviewers['users']:
+                user_data = self.__get_user(requested_reviewer['login'])
+                requested_reviewers.append(user_data)
+
+        return requested_reviewers
+
+    def __get_pull_review_comments(self, pr_number):
+        """Get pull request review comments"""
+
+        comments = []
+        group_comments = self.client.pull_review_comments(pr_number)
+
+        for raw_comments in group_comments:
+
+            for comment in json.loads(raw_comments):
+                comment_id = comment.get('id')
+                comment['user_data'] = self.__get_user(comment['user']['login'])
+                comment['reactions_data'] = \
+                    self.__get_pull_review_comment_reactions(comment_id, comment['reactions']['total_count'])
+                comments.append(comment)
+
+        return comments
+
+    def __get_pull_review_comment_reactions(self, comment_id, total_count):
+        """Get pull review comment reactions"""
+
+        reactions = []
+
+        if total_count == 0:
+            return reactions
+
+        group_reactions = self.client.pull_review_comment_reactions(comment_id)
+
+        for raw_reactions in group_reactions:
+
+            for reaction in json.loads(raw_reactions):
+                reaction['user_data'] = self.__get_user(reaction['user']['login'])
+                reactions.append(reaction)
+
+        return reactions
+
     def __get_user(self, login):
         """Get user and org data for the login"""
 
@@ -310,6 +401,14 @@ class GitHub(Backend):
         issue['assignees_data'] = []
         issue['comments_data'] = []
         issue['reactions_data'] = []
+
+    def __init_extra_pull_fields(self, pull):
+        """Add fields to a pull request"""
+
+        pull['user_data'] = {}
+        pull['review_comments_data'] = {}
+        pull['requested_reviewers_data'] = []
+        pull['merged_by_data'] = []
 
 
 class GitHubClient(HttpClient, RateLimitHandler):
@@ -359,7 +458,12 @@ class GitHubClient(HttpClient, RateLimitHandler):
         between the current date and the next date when the token is fully regenerated.
         """
 
-        return self.rate_limit_reset_ts - (int(time.time()) + 1)
+        time_to_reset = self.rate_limit_reset_ts - (datetime_utcnow().replace(microsecond=0).timestamp() + 1)
+
+        if time_to_reset < 0:
+            time_to_reset = 0
+
+        return time_to_reset
 
     def issue_reactions(self, issue_number):
         """Get reactions of an issue"""
@@ -398,7 +502,7 @@ class GitHubClient(HttpClient, RateLimitHandler):
         return self.fetch_items(path, payload)
 
     def issues(self, from_date=None):
-        """Get the issues from pagination"""
+        """Get the issues from pagination. Note that issues contain also pull requests."""
 
         payload = {
             'state': 'all',
@@ -410,6 +514,56 @@ class GitHubClient(HttpClient, RateLimitHandler):
             payload['since'] = from_date.isoformat()
 
         path = urijoin("issues")
+        return self.fetch_items(path, payload)
+
+    def pulls(self, from_date=None):
+        """Get ony pull requests"""
+
+        issues_groups = self.issues(from_date=from_date)
+
+        for raw_issues in issues_groups:
+            issues = json.loads(raw_issues)
+            for issue in issues:
+
+                if "pull_request" not in issue:
+                    continue
+
+                pull_number = issue["number"]
+                path = urijoin(self.base_url, 'repos', self.owner, self.repository, "pulls", pull_number)
+
+                r = self.fetch(path)
+                pull = r.text
+
+                yield pull
+
+    def pull_requested_reviewers(self, pr_number):
+        """Get pull requested reviewers"""
+
+        requested_reviewers_url = urijoin("pulls", str(pr_number), "requested_reviewers")
+        return self.fetch_items(requested_reviewers_url, {})
+
+    def pull_review_comments(self, pr_number):
+        """Get pull request review comments"""
+
+        payload = {
+            'per_page': 30,
+            'direction': 'asc',
+            'sort': 'updated'
+        }
+
+        comments_url = urijoin("pulls", str(pr_number), "comments")
+        return self.fetch_items(comments_url, payload)
+
+    def pull_review_comment_reactions(self, comment_id):
+        """Get reactions of a review comment"""
+
+        payload = {
+            'per_page': 30,
+            'direction': 'asc',
+            'sort': 'updated'
+        }
+
+        path = urijoin("pulls", "comments", str(comment_id), "reactions")
         return self.fetch_items(path, payload)
 
     def user(self, login):
@@ -542,7 +696,7 @@ class GitHubCommand(BackendCommand):
 
         parser = BackendCommandArgumentParser(from_date=True,
                                               token_auth=True,
-                                              cache=True)
+                                              archive=True)
 
         # GitHub options
         group = parser.parser.add_argument_group('GitHub arguments')

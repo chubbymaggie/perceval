@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -53,7 +53,7 @@ class HttpClient:
     :param sleep_time: time to sleep in case
         of connection problems
     """
-    version = '0.1.3'
+    version = '0.1.5'
 
     DEFAULT_SLEEP_TIME = 1
 
@@ -133,8 +133,23 @@ class HttpClient:
 
         return response
 
+    @staticmethod
+    def sanitize_for_archive(url, headers, payload):
+        """Sanitize the URL, headers and payload of a HTTP request before storing/retrieving items.
+        By default, this method does not modify url, headers and payload. The modifications take
+        place within the specific backends that redefine the sanitize_for_archive.
+
+        :param: url: HTTP url request
+        :param: headers: HTTP headers request
+        :param: payload: HTTP payload request
+
+        :returns url, headers and payload sanitized
+        """
+        return url, headers, payload
+
     def _fetch_from_archive(self, url, payload, headers):
 
+        url, headers, payload = self.sanitize_for_archive(url, headers, payload)
         response = self.archive.retrieve(url, payload, headers)
 
         if not isinstance(response, requests.Response):
@@ -153,10 +168,12 @@ class HttpClient:
             response.raise_for_status()
         except Exception as e:
             if self.archive:
+                url, headers, payload = self.sanitize_for_archive(url, headers, payload)
                 self.archive.store(url, payload, headers, e)
             raise e
 
         if self.archive:
+            url, headers, payload = self.sanitize_for_archive(url, headers, payload)
             self.archive.store(url, payload, headers, response)
         return response
 
@@ -198,7 +215,7 @@ class RateLimitHandler:
     :param rate_limit_header: header to know the current rate limit
     :param rate_limit_reset_header: header to know the next rate limit reset
     """
-    version = '0.1'
+    version = '0.2'
 
     MIN_RATE_LIMIT = 10
     MAX_RATE_LIMIT = 500
@@ -236,6 +253,11 @@ class RateLimitHandler:
         """
         if self.rate_limit is not None and self.rate_limit <= self.min_rate_to_sleep:
             seconds_to_reset = self.calculate_time_to_reset()
+
+            if seconds_to_reset < 0:
+                logger.warning("Value of sleep for rate limit is negative, reset it to 0")
+                seconds_to_reset = 0
+
             cause = "Rate limit exhausted."
             if self.sleep_for_rate:
                 logger.info("%s Waiting %i secs for rate limit reset.", cause, seconds_to_reset)

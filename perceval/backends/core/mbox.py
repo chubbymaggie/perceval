@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -42,6 +42,7 @@ from ...utils import (DEFAULT_DATETIME,
                       check_compressed_file_type,
                       message_to_dict)
 
+CATEGORY_MESSAGE = "message"
 
 logger = logging.getLogger(__name__)
 
@@ -58,27 +59,29 @@ class MBox(Backend):
         mailing list
     :param dirpath: directory path where the mboxes are stored
     :param tag: label used to mark the data
-    :param cache: cache object to store raw data
-    :param archive: archive to read/store data fetched by the backend
+    :param archive: archive to store/retrieve items
     """
-    version = '0.8.1'
+    version = '0.10.2'
+
+    CATEGORIES = [CATEGORY_MESSAGE]
 
     DATE_FIELD = 'Date'
     MESSAGE_ID_FIELD = 'Message-ID'
 
-    def __init__(self, uri, dirpath, tag=None, cache=None, archive=None):
+    def __init__(self, uri, dirpath, tag=None, archive=None):
         origin = uri
 
-        super().__init__(origin, tag=tag, cache=cache, archive=archive)
+        super().__init__(origin, tag=tag, archive=archive)
         self.uri = uri
         self.dirpath = dirpath
 
-    def fetch(self, from_date=DEFAULT_DATETIME):
+    def fetch(self, category=CATEGORY_MESSAGE, from_date=DEFAULT_DATETIME):
         """Fetch the messages from a set of mbox files.
 
         The method retrieves, from mbox files, the messages stored in
         these containers.
 
+        :param category: the category of items to fetch
         :param from_date: obtain messages since this date
 
         :returns: a generator of messages
@@ -87,13 +90,18 @@ class MBox(Backend):
             from_date = DEFAULT_DATETIME
 
         kwargs = {'from_date': from_date}
-        items = super().fetch("message", **kwargs)
+        items = super().fetch(category, **kwargs)
 
         return items
 
-    def fetch_items(self, **kwargs):
-        """Fetch the messages"""
+    def fetch_items(self, category, **kwargs):
+        """Fetch the messages
 
+        :param category: the category of items to fetch
+        :param kwargs: backend arguments
+
+        :returns: a generator of items
+        """
         from_date = kwargs['from_date']
 
         logger.info("Looking for messages from '%s' on '%s' since %s",
@@ -107,14 +115,6 @@ class MBox(Backend):
             yield message
 
         logger.info("Fetch process completed")
-
-    @classmethod
-    def has_caching(cls):
-        """Returns whether it supports caching items on the fetch process.
-
-        :returns: this backend does not support items cache
-        """
-        return False
 
     @classmethod
     def has_archiving(cls):
@@ -162,7 +162,7 @@ class MBox(Backend):
         This backend only generates one type of item which is
         'message'.
         """
-        return 'message'
+        return CATEGORY_MESSAGE
 
     @staticmethod
     def parse_mbox(filepath):
@@ -193,6 +193,8 @@ class MBox(Backend):
         nmsgs, imsgs, tmsgs = (0, 0, 0)
 
         for mbox in mailing_list.mboxes:
+            tmp_path = None
+
             try:
                 tmp_path = self._copy_mbox(mbox)
 
@@ -222,11 +224,11 @@ class MBox(Backend):
             except (OSError, EOFError) as e:
                 logger.warning("Ignoring %s mbox due to: %s", mbox.filepath, str(e))
             except Exception as e:
-                if os.path.exists(tmp_path):
+                if tmp_path and os.path.exists(tmp_path):
                     os.remove(tmp_path)
                 raise e
             finally:
-                if os.path.exists(tmp_path):
+                if tmp_path and os.path.exists(tmp_path):
                     os.remove(tmp_path)
 
         logger.info("Done. %s/%s messages fetched; %s ignored",

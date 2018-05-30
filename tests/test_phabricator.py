@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2015-2017 Bitergia
+# Copyright (C) 2015-2018 Bitergia
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -20,18 +20,15 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+import copy
 import datetime
 import httpretty
 import json
 import os
 import pkg_resources
 import requests
-import sys
 import unittest
 
-# Hack to make sure that tests import the right packages
-# due to setuptools behaviour
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 pkg_resources.declare_namespace('perceval.backends')
 
 from perceval.backend import BackendCommandArgumentParser
@@ -40,7 +37,7 @@ from perceval.backends.core.phabricator import (Phabricator,
                                                 PhabricatorCommand,
                                                 ConduitClient,
                                                 ConduitError)
-from tests.base import TestCaseBackendArchive
+from base import TestCaseBackendArchive
 
 PHABRICATOR_URL = 'http://example.com'
 PHABRICATOR_API_URL = PHABRICATOR_URL + '/api'
@@ -184,11 +181,6 @@ class TestPhabricatorBackend(unittest.TestCase):
         self.assertEqual(phab.origin, PHABRICATOR_URL)
         self.assertEqual(phab.tag, PHABRICATOR_URL)
 
-    def test_has_caching(self):
-        """Test if it returns False when has_caching is called"""
-
-        self.assertEqual(Phabricator.has_caching(), False)
-
     def test_has_archiving(self):
         """Test if it returns True when has_archiving is called"""
 
@@ -239,12 +231,50 @@ class TestPhabricatorBackend(unittest.TestCase):
         self.assertEqual(trans[0]['authorData']['userName'], 'jdoe')
         self.assertEqual(trans[15]['authorData']['userName'], 'jdoe')
 
+        # Check that subscribers data is included for core:subscribers type transactions
+        trans = tasks[0]['data']['transactions'][6]
+        self.assertEqual(trans['transactionType'], 'core:subscribers')
+        self.assertEqual(trans['oldValue'], [])
+        self.assertEqual(trans['oldValue'], trans['oldValue_data'])
+        self.assertEqual(len(trans['newValue']), len(trans['newValue_data']))
+        self.assertDictEqual(trans['newValue_data'][0], trans['authorData'])
+
+        # Check that project data is included for core:edge type transactions
+        trans = tasks[0]['data']['transactions'][7]
+        self.assertEqual(trans['transactionType'], 'core:edge')
+        self.assertEqual(trans['newValue_data'][0]['phid'],
+                         trans['newValue'][trans['newValue_data'][0]['phid']]['dst'])
+
+        # Check that policy data is include for core:edit-policy type transactions
+        trans = tasks[0]['data']['transactions'][8]
+        self.assertEqual(trans['transactionType'], 'core:edit-policy')
+        self.assertIsNotNone(trans['newValue_data'])
+        self.assertIsNone(trans['oldValue_data'])
+
+        # Check that policy data is include for core:view-policy type transactions
+        trans = tasks[0]['data']['transactions'][9]
+        self.assertEqual(trans['transactionType'], 'core:view-policy')
+        self.assertIsNotNone(trans['newValue_data'])
+        self.assertIsNone(trans['oldValue_data'])
+
+        # Check that project data is include for core:columns type transactions
+        trans = tasks[3]['data']['transactions'][15]
+        self.assertEqual(trans['transactionType'], 'core:columns')
+        self.assertEqual(trans['newValue'][0]['boardPHID_data']['name'], 'Team: Devel')
+        self.assertIsNone(trans['oldValue'])
+
+        # Check that reassign data is include for reassign type transactions
+        trans = tasks[0]['data']['transactions'][13]
+        self.assertEqual(trans['transactionType'], 'reassign')
+        self.assertDictEqual(trans['newValue_data'], trans['authorData'])
+        self.assertIsNone(trans['oldValue_data'])
+
         # Check authors that weren't found on the server: jsmith
         trans = tasks[1]['data']['transactions']
         self.assertEqual(trans[3]['authorData'], None)
 
         trans = tasks[3]['data']['transactions']
-        self.assertEqual(trans[0]['authorData']['userName'], 'jrae')
+        self.assertEqual(trans[0]['authorData']['userName'], 'jdoe')
         self.assertEqual(trans[15]['authorData']['userName'], 'jane')
         self.assertEqual(trans[16]['authorData']['name'], 'Herald')
 
@@ -285,6 +315,22 @@ class TestPhabricatorBackend(unittest.TestCase):
                 'params': {
                     '__conduit__': {'token': 'AAAA'},
                     'phids': ['PHID-USER-2uk52xorcqb6sjvp467y']
+                }
+            },
+            {
+                '__conduit__': ['True'],
+                'output': ['json'],
+                'params': {
+                    '__conduit__': {'token': 'AAAA'},
+                    'phids': ['PHID-PROJ-zi2ndtoy3fh5pnbqzfdo']
+                }
+            },
+            {
+                '__conduit__': ['True'],
+                'output': ['json'],
+                'params': {
+                    '__conduit__': {'token': 'AAAA'},
+                    'phids': ['PHID-PROJ-2qnt6thbrd7qnx5bitzy']
                 }
             },
             {
@@ -345,22 +391,6 @@ class TestPhabricatorBackend(unittest.TestCase):
                     '__conduit__': {'token': 'AAAA'},
                     'phids': ['PHID-APPS-PhabricatorHeraldApplication']
                 }
-            },
-            {
-                '__conduit__': ['True'],
-                'output': ['json'],
-                'params': {
-                    '__conduit__': {'token': 'AAAA'},
-                    'phids': ['PHID-PROJ-zi2ndtoy3fh5pnbqzfdo']
-                }
-            },
-            {
-                '__conduit__': ['True'],
-                'output': ['json'],
-                'params': {
-                    '__conduit__': {'token': 'AAAA'},
-                    'phids': ['PHID-PROJ-2qnt6thbrd7qnx5bitzy']
-                }
             }
         ]
 
@@ -369,7 +399,7 @@ class TestPhabricatorBackend(unittest.TestCase):
         for i in range(len(expected)):
             rparams = http_requests[i].parsed_body
             rparams['params'] = json.loads(rparams['params'][0])
-            self.assertDictEqual(rparams, expected[i])
+            self.assertIn(rparams, expected)
 
     @httpretty.activate
     def test_fetch_from_date(self):
@@ -394,6 +424,14 @@ class TestPhabricatorBackend(unittest.TestCase):
         self.assertEqual(task['updated_on'], 1467196707.0)
         self.assertEqual(task['category'], 'task')
         self.assertEqual(task['tag'], PHABRICATOR_URL)
+
+        # Check subscribers transaction type
+        trans = task['data']['transactions'][4]
+        self.assertEqual(trans['newValue_data'][0]['userName'], 'jdoe')
+
+        # Check reassign transaction type
+        trans = task['data']['transactions'][11]
+        self.assertEqual(trans['newValue_data']['userName'], 'jdoe')
 
         # Check requests
         expected = [
@@ -420,7 +458,15 @@ class TestPhabricatorBackend(unittest.TestCase):
                 'output': ['json'],
                 'params': {
                     '__conduit__': {'token': 'AAAA'},
-                    'phids': ['PHID-USER-pr5fcxy4xk5ofqsfqcfc']
+                    'phids': ['PHID-USER-2uk52xorcqb6sjvp467y']
+                }
+            },
+            {
+                '__conduit__': ['True'],
+                'output': ['json'],
+                'params': {
+                    '__conduit__': {'token': 'AAAA'},
+                    'phids': ['PHID-PROJ-zi2ndtoy3fh5pnbqzfdo']
                 }
             },
             {
@@ -444,15 +490,15 @@ class TestPhabricatorBackend(unittest.TestCase):
                 'output': ['json'],
                 'params': {
                     '__conduit__': {'token': 'AAAA'},
-                    'phids': ['PHID-PROJ-zi2ndtoy3fh5pnbqzfdo']
+                    'phids': ['PHID-USER-pr5fcxy4xk5ofqsfqcfc']
                 }
             },
             {
                 '__conduit__': ['True'],
                 'output': ['json'],
                 'params': {
-                    '__conduit__': {'token': 'AAAA'},
-                    'phids': ['PHID-PROJ-2qnt6thbrd7qnx5bitzy']
+                    "__conduit__": {"token": "AAAA"},
+                    "phids": ["PHID-PROJ-2qnt6thbrd7qnx5bitzy"]
                 }
             }
         ]
@@ -561,7 +607,8 @@ class TestPhabricatorBackendArchive(TestCaseBackendArchive):
 
     def setUp(self):
         super().setUp()
-        self.backend = Phabricator(PHABRICATOR_URL, 'AAAA', archive=self.archive)
+        self.backend_write_archive = Phabricator(PHABRICATOR_URL, 'AAAA', archive=self.archive)
+        self.backend_read_archive = Phabricator(PHABRICATOR_URL, 'BBBB', archive=self.archive)
 
     @httpretty.activate
     def test_fetch_from_archive(self):
@@ -606,14 +653,14 @@ class TestPhabricatorCommand(unittest.TestCase):
         args = ['http://example.com',
                 '--api-token', '12345678',
                 '--tag', 'test',
-                '--no-cache',
+                '--no-archive',
                 '--from-date', '1970-01-01']
 
         parsed_args = parser.parse(*args)
         self.assertEqual(parsed_args.url, 'http://example.com')
         self.assertEqual(parsed_args.api_token, '12345678')
         self.assertEqual(parsed_args.tag, 'test')
-        self.assertEqual(parsed_args.no_cache, True)
+        self.assertEqual(parsed_args.no_archive, True)
         self.assertEqual(parsed_args.from_date, DEFAULT_DATETIME)
 
 
@@ -835,6 +882,40 @@ class TestConduitClient(unittest.TestCase):
         with self.assertRaises(requests.exceptions.HTTPError):
             _ = client.phids("PHID-APPS-PhabricatorHeraldApplication")
             self.assertEqual(len(reqs), 1)
+
+    def test_sanitize_for_archive_no_token(self):
+        """Test whether the sanitize method works properly when a token is not given"""
+
+        url = "http://example.com"
+        headers = "headers-information"
+        payload = {'__conduit__': True,
+                   'output': 'json',
+                   'params': '{"phids": ["PHID-APPS-PhabricatorHeraldApplication"]}'}
+
+        s_url, s_headers, s_payload = ConduitClient.sanitize_for_archive(url, headers, copy.deepcopy(payload))
+
+        self.assertEqual(url, s_url)
+        self.assertEqual(headers, s_headers)
+        self.assertEqual(payload, s_payload)
+
+    def test_sanitize_for_archive_token(self):
+        """Test whether the sanitize method works properly when a token is given"""
+
+        url = "http://example.com"
+        headers = "headers-information"
+        payload = {'__conduit__': True,
+                   'output': 'json',
+                   'params': '{"__conduit__": {"token": "aaaa"}, '
+                             '"phids": ["PHID-APPS-PhabricatorHeraldApplication"]}'}
+
+        s_url, s_headers, s_payload = ConduitClient.sanitize_for_archive(url, headers, copy.deepcopy(payload))
+        params = json.loads(payload['params'])
+        params.pop("__conduit__")
+        payload['params'] = json.dumps(params, sort_keys=True)
+
+        self.assertEqual(url, s_url)
+        self.assertEqual(headers, s_headers)
+        self.assertEqual(payload, s_payload)
 
 
 if __name__ == "__main__":
